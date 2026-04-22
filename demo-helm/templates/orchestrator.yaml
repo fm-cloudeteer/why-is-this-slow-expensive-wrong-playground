@@ -1,0 +1,59 @@
+{{- if .Values.orchestrator.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "ai-obs-demo.fullname" . }}-orchestrator
+  labels:
+    app.kubernetes.io/part-of: ai-obs-demo
+    app: orchestrator
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: {{ .Values.orchestrator.activeDeadlineSeconds | default 1200 }}
+  template:
+    metadata:
+      labels:
+        app: orchestrator
+        app.kubernetes.io/part-of: ai-obs-demo
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: orchestrator
+          image: "{{ .Values.orchestrator.image.repository }}:{{ .Values.orchestrator.image.tag }}"
+          imagePullPolicy: {{ .Values.orchestrator.image.pullPolicy | default "Never" }}
+          args:
+            {{- range .Values.orchestrator.args }}
+            - {{ . | quote }}
+            {{- end }}
+          env:
+            - name: GATEWAY_URL
+              value: "http://{{ include "ai-obs-demo.fullname" . }}-gravitee-gateway:8082"
+            - name: LANGFUSE_URL
+              value: "http://{{ include "ai-obs-demo.fullname" . }}-langfuse-web:3000"
+            - name: PROMETHEUS_URL
+              value: "http://{{ include "ai-obs-demo.fullname" . }}-prometheus-server:80"
+            - name: TEMPO_URL
+              value: "http://{{ include "ai-obs-demo.fullname" . }}-tempo:3100"
+            - name: FEATURE_FLAG_URL
+              value: "http://{{ include "ai-obs-demo.fullname" . }}-app:8080"
+            - name: LANGFUSE_PUBLIC_KEY
+              value: {{ .Values.demoApp.langfuse.publicKey | quote }}
+            - name: LANGFUSE_SECRET_KEY
+              value: {{ .Values.demoApp.langfuse.secretKey | quote }}
+            - name: TENANT_A_API_KEY
+              value: {{ .Values.orchestrator.tenantKeys.a | quote }}
+            - name: TENANT_B_API_KEY
+              value: {{ .Values.orchestrator.tenantKeys.b | quote }}
+            - name: TENANT_C_API_KEY
+              value: {{ .Values.orchestrator.tenantKeys.c | quote }}
+            - name: TENANT_D_API_KEY
+              value: {{ .Values.orchestrator.tenantKeys.d | quote }}
+            - name: BURST_RPS
+              value: {{ .Values.orchestrator.burstRps | default "30" | quote }}
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+{{- end }}

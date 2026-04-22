@@ -1,0 +1,147 @@
+{{- if .Values.vllm.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ai-obs-demo.fullname" . }}-vllm
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ai-obs-demo.labels" . | nindent 4 }}
+    {{- include "ai-obs-demo.selectorLabels" (dict "name" "vllm" "root" .) | nindent 4 }}
+spec:
+  replicas: {{ .Values.vllm.replicaCount }}
+  # vLLM must not have two pods starting simultaneously against the same GPU
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "ai-obs-demo.selectorLabels" (dict "name" "vllm" "root" .) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "ai-obs-demo.labels" . | nindent 8 }}
+        {{- include "ai-obs-demo.selectorLabels" (dict "name" "vllm" "root" .) | nindent 8 }}
+    spec:
+      {{- with .Values.vllm.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.vllm.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.vllm.gpu.enabled }}
+      runtimeClassName: nvidia
+      {{- end }}
+      {{- if gt (int .Values.vllm.gpu.count) 1 }}
+      hostIPC: true              # required for NCCL shared memory with tensor parallelism
+      {{- end }}
+      containers:
+        - name: vllm
+          image: "{{ .Values.vllm.image.repository }}:{{ .Values.vllm.image.tag }}"
+          imagePullPolicy: {{ .Values.vllm.image.pullPolicy }}
+          command:
+            - python3
+            - -m
+            - vllm.entrypoints.openai.api_server
+            - --model
+            - {{ .Values.vllm.model | quote }}
+            - --host
+            - "0.0.0.0"
+            - --port
+            - "8000"
+            {{- range .Values.vllm.extraArgs }}
+            - {{ . | quote }}
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+          env:
+            {{- if .Values.vllm.hfTokenSecret }}
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.vllm.hfTokenSecret }}
+                  key: HF_TOKEN
+            {{- else if .Values.vllm.hfToken }}
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ai-obs-demo.fullname" . }}-hf-token
+                  key: HF_TOKEN
+            {{- end }}
+            # Point HF cache at the mounted volume
+            - name: HF_HUB_CACHE
+              value: "/root/.cache/huggingface"
+            # Emit OpenTelemetry traces
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://{{ include "ai-obs-demo.fullname" . }}-alloy:4317"
+            - name: OTEL_SERVICE_NAME
+              value: "vllm"
+            {{- if gt (int .Values.vllm.gpu.count) 1 }}
+            # NCCL tuning for tensor parallelism
+            - name: NCCL_P2P_DISABLE
+              value: "0"
+            - name: CUDA_DEVICE_MAX_CONNECTIONS
+              value: "1"
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 300    # model download + load can take 5-10 min
+            periodSeconds: 30
+            failureThreshold: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 120
+            periodSeconds: 15
+            failureThreshold: 20
+          resources:
+            requests:
+              cpu: {{ .Values.vllm.resources.requests.cpu }}
+              memory: {{ .Values.vllm.resources.requests.memory }}
+              {{- if .Values.vllm.gpu.enabled }}
+              nvidia.com/gpu: {{ .Values.vllm.gpu.count }}
+              {{- end }}
+            limits:
+              cpu: {{ .Values.vllm.resources.limits.cpu }}
+              memory: {{ .Values.vllm.resources.limits.memory }}
+              {{- if .Values.vllm.gpu.enabled }}
+              nvidia.com/gpu: {{ .Values.vllm.gpu.count }}
+              {{- end }}
+          volumeMounts:
+            - name: model-cache
+              mountPath: /root/.cache/huggingface
+      volumes:
+        - name: model-cache
+          {{- if eq (.Values.vllm.modelCache.type | default "emptyDir") "hostPath" }}
+          hostPath:
+            path: {{ .Values.vllm.modelCache.hostPath }}
+            type: DirectoryOrCreate
+          {{- else if eq (.Values.vllm.modelCache.type | default "emptyDir") "pvc" }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.vllm.modelCache.pvcName | default (printf "%s-vllm-model-cache" (include "ai-obs-demo.fullname" .)) }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "ai-obs-demo.fullname" . }}-vllm
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ai-obs-demo.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.vllm.service.type }}
+  ports:
+    - port: {{ .Values.vllm.service.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "ai-obs-demo.selectorLabels" (dict "name" "vllm" "root" .) | nindent 4 }}
+{{- end }}

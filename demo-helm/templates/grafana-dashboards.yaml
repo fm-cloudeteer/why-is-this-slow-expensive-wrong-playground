@@ -1,0 +1,224 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ai-obs-demo-dashboards
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ai-obs-demo.labels" . | nindent 4 }}
+    grafana_dashboard: "1"
+data:
+  demo-unified.json: |
+    {
+      "title": "AI Obs Demo — Slow / Expensive / Wrong",
+      "uid": "ai-obs-demo-unified",
+      "tags": ["ai-obs-demo"],
+      "timezone": "browser",
+      "refresh": "10s",
+      "time": { "from": "now-30m", "to": "now" },
+      "panels": [
+
+        {
+          "id": 1,
+          "title": "Latency by Layer (p99) — WHERE did time go?",
+          "type": "timeseries",
+          "gridPos": { "x": 0, "y": 0, "w": 24, "h": 8 },
+          "fieldConfig": {
+            "defaults": { "unit": "ms", "custom": { "stacking": { "mode": "normal" } } }
+          },
+          "targets": [
+            {
+              "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+              "expr": "histogram_quantile(0.99, sum(rate(http_request_duration_ms_bucket{job='gravitee',le!=''}[1m])) by (le))",
+              "legendFormat": "Gateway p99"
+            },
+            {
+              "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+              "expr": "histogram_quantile(0.99, sum(rate(nats_queue_wait_ms_bucket{le!=''}[1m])) by (le))",
+              "legendFormat": "Queue wait p99"
+            },
+            {
+              "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+              "expr": "histogram_quantile(0.99, sum(rate(vllm:time_to_first_token_seconds_bucket{le!=''}[1m])) by (le)) * 1000",
+              "legendFormat": "Inference TTFT p99"
+            },
+            {
+              "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+              "expr": "histogram_quantile(0.99, sum(rate(vllm:time_per_output_token_seconds_bucket{le!=''}[1m])) by (le)) * 1000",
+              "legendFormat": "Inference decode p99"
+            }
+          ]
+        },
+
+        {
+          "id": 2,
+          "title": "Queue Depth — NATS pending messages",
+          "type": "timeseries",
+          "gridPos": { "x": 0, "y": 8, "w": 12, "h": 6 },
+          "fieldConfig": { "defaults": { "unit": "short", "color": { "fixedColor": "orange", "mode": "fixed" } } },
+          "targets": [
+            {
+              "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+              "expr": "nats_consumer_num_pending{stream_name='inference'}",
+              "legendFormat": "NATS queue depth"
+            },
+            {
+              "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+              "expr": "vllm:num_requests_waiting",
+              "legendFormat": "vLLM internal queue"
+            }
+          ]
+        },
+
+        {
+          "id": 3,
+          "title": "GPU Utilization & VRAM",
+          "type": "timeseries",
+          "gridPos": { "x": 12, "y": 8, "w": 12, "h": 6 },
+          "fieldConfig": { "defaults": { "unit": "percent" } },
+          "targets": [
+            {
+              "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+              "expr": "max(DCGM_FI_DEV_GPU_UTIL) by (gpu)",
+              "legendFormat": "GPU {{"{{"}} gpu {{"}}"}} util %"
+            },
+            {
+              "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+              "expr": "max(DCGM_FI_DEV_FB_USED / (DCGM_FI_DEV_FB_USED + DCGM_FI_DEV_FB_FREE) * 100) by (gpu)",
+              "legendFormat": "GPU {{"{{"}} gpu {{"}}"}} VRAM %"
+            },
+            {
+              "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+              "expr": "vllm:gpu_cache_usage_perc * 100",
+              "legendFormat": "KV cache %"
+            }
+          ]
+        },
+
+        {
+          "id": 4,
+          "title": "Token Spend by Tenant — WHO is burning budget?",
+          "type": "barchart",
+          "gridPos": { "x": 0, "y": 14, "w": 12, "h": 8 },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "stacking": { "mode": "normal", "group": "A" },
+                "fillOpacity": 80
+              }
+            },
+            "overrides": [
+              {
+                "matcher": { "id": "byRegexp", "options": ".*input.*" },
+                "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "blue" } }]
+              },
+              {
+                "matcher": { "id": "byRegexp", "options": ".*output.*" },
+                "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "orange" } }]
+              }
+            ]
+          },
+          "options": {
+            "xTickLabelRotation": 0,
+            "stacking": "normal",
+            "groupWidth": 0.7,
+            "barWidth": 0.8,
+            "showValue": "auto",
+            "legend": { "displayMode": "list", "placement": "bottom" }
+          },
+          "transformations": [
+            {
+              "id": "joinByField",
+              "options": { "byField": "tenant_id", "mode": "outer" }
+            }
+          ],
+          "targets": [
+            {
+              "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+              "refId": "A",
+              "instant": true,
+              "format": "table",
+              "expr": "sum(litellm_input_tokens_total) by (tenant_id)",
+              "legendFormat": "input tokens"
+            },
+            {
+              "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+              "refId": "B",
+              "instant": true,
+              "format": "table",
+              "expr": "sum(litellm_output_tokens_total) by (tenant_id)",
+              "legendFormat": "output tokens"
+            }
+          ]
+        },
+
+        {
+          "id": 5,
+          "title": "Request Rate & Error Rate by Tenant",
+          "type": "timeseries",
+          "gridPos": { "x": 12, "y": 14, "w": 12, "h": 8 },
+          "fieldConfig": { "defaults": { "unit": "reqps" } },
+          "targets": [
+            {
+              "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+              "refId": "A",
+              "expr": "sum(rate(litellm_requests_total[1m])) by (tenant_id)",
+              "legendFormat": "{{"{{"}} tenant_id {{"}}"}} req/s"
+            },
+            {
+              "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+              "refId": "B",
+              "expr": "sum(rate(litellm_requests_total{status='error'}[1m])) by (tenant_id)",
+              "legendFormat": "{{"{{"}} tenant_id {{"}}"}} errors/s"
+            }
+          ]
+        },
+
+        {
+          "id": 6,
+          "title": "Output Quality Score by Tenant — IS it working correctly?",
+          "type": "timeseries",
+          "gridPos": { "x": 0, "y": 22, "w": 24, "h": 8 },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "min": 0,
+              "max": 1,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "red",    "value": 0 },
+                  { "color": "yellow", "value": 0.6 },
+                  { "color": "green",  "value": 0.8 }
+                ]
+              }
+            }
+          },
+          "targets": [
+            {
+              "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+              "refId": "A",
+              "expr": "avg(langfuse_score{score_name='quality'}) by (tenant_id)",
+              "legendFormat": "{{"{{"}} tenant_id {{"}}"}} quality score"
+            }
+          ],
+          "alert": {
+            "name": "Quality score below threshold",
+            "conditions": [
+              {
+                "evaluator": { "params": [0.65], "type": "lt" },
+                "operator": { "type": "and" },
+                "query": { "params": ["A", "5m", "now"] },
+                "reducer": { "params": [], "type": "avg" },
+                "type": "query"
+              }
+            ],
+            "executionErrorState": "alerting",
+            "for": "2m",
+            "frequency": "30s",
+            "message": "Output quality has dropped below threshold for one or more tenants."
+          }
+        }
+
+      ]
+    }

@@ -1,0 +1,100 @@
+{{- if .Values.litellm.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "ai-obs-demo.fullname" . }}-litellm-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ai-obs-demo.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    {{- toYaml .Values.litellm.config | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ai-obs-demo.fullname" . }}-litellm
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ai-obs-demo.labels" . | nindent 4 }}
+    {{- include "ai-obs-demo.selectorLabels" (dict "name" "litellm" "root" .) | nindent 4 }}
+spec:
+  replicas: {{ .Values.litellm.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "ai-obs-demo.selectorLabels" (dict "name" "litellm" "root" .) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "ai-obs-demo.labels" . | nindent 8 }}
+        {{- include "ai-obs-demo.selectorLabels" (dict "name" "litellm" "root" .) | nindent 8 }}
+      annotations:
+        checksum/config: {{ toYaml .Values.litellm.config | sha256sum }}
+    spec:
+      containers:
+        - name: litellm
+          image: "{{ .Values.litellm.image.repository }}:{{ .Values.litellm.image.tag }}"
+          imagePullPolicy: {{ .Values.litellm.image.pullPolicy }}
+          args:
+            - "--config"
+            - "/app/config.yaml"
+            - "--port"
+            - "4000"
+            - "--detailed_debug"
+          ports:
+            - name: http
+              containerPort: 4000
+              protocol: TCP
+          volumeMounts:
+            - name: config
+              mountPath: /app/config.yaml
+              subPath: config.yaml
+          env:
+            - name: LANGFUSE_PUBLIC_KEY
+              value: {{ .Values.demoApp.langfuse.publicKey | quote }}
+            - name: LANGFUSE_SECRET_KEY
+              value: {{ .Values.demoApp.langfuse.secretKey | quote }}
+            - name: LANGFUSE_HOST
+              value: {{ .Values.litellm.config.litellm_settings.langfuse_host | quote }}
+            - name: OTEL_EXPORTER
+              value: "otlp_grpc"
+            - name: OTEL_ENDPOINT
+              value: "http://{{ include "ai-obs-demo.fullname" . }}-alloy:4317"
+            - name: OTEL_SERVICE_NAME
+              value: "litellm"
+          livenessProbe:
+            httpGet:
+              path: /health/liveliness
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /health/readiness
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.litellm.resources | nindent 12 }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "ai-obs-demo.fullname" . }}-litellm-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "ai-obs-demo.fullname" . }}-litellm
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ai-obs-demo.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.litellm.service.type }}
+  ports:
+    - port: {{ .Values.litellm.service.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "ai-obs-demo.selectorLabels" (dict "name" "litellm" "root" .) | nindent 4 }}
+{{- end }}

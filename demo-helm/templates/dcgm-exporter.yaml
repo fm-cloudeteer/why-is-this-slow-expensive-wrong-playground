@@ -1,0 +1,94 @@
+{{- if .Values.dcgmExporter.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "ai-obs-demo.fullname" . }}-dcgm-metrics
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ai-obs-demo.labels" . | nindent 4 }}
+data:
+  metrics.csv: |
+    {{ .Values.dcgmExporter.metricsConfig | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "ai-obs-demo.fullname" . }}-dcgm-exporter
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ai-obs-demo.labels" . | nindent 4 }}
+    {{- include "ai-obs-demo.selectorLabels" (dict "name" "dcgm-exporter" "root" .) | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "ai-obs-demo.selectorLabels" (dict "name" "dcgm-exporter" "root" .) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "ai-obs-demo.labels" . | nindent 8 }}
+        {{- include "ai-obs-demo.selectorLabels" (dict "name" "dcgm-exporter" "root" .) | nindent 8 }}
+      annotations:
+        # Alloy will auto-discover this pod for scraping
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9400"
+    spec:
+      {{- with .Values.dcgmExporter.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.dcgmExporter.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      hostNetwork: false
+      runtimeClassName: nvidia
+      containers:
+        - name: dcgm-exporter
+          image: "{{ .Values.dcgmExporter.image.repository }}:{{ .Values.dcgmExporter.image.tag }}"
+          imagePullPolicy: {{ .Values.dcgmExporter.image.pullPolicy }}
+          env:
+            - name: DCGM_EXPORTER_LISTEN
+              value: ":9400"
+            - name: DCGM_EXPORTER_KUBERNETES
+              value: "true"
+            - name: DCGM_EXPORTER_COLLECTORS
+              value: /etc/dcgm-exporter/metrics.csv
+          ports:
+            - name: metrics
+              containerPort: 9400
+              protocol: TCP
+          securityContext:
+            runAsNonRoot: false
+            privileged: true   # required to access NVML
+          volumeMounts:
+            - name: metrics-config
+              mountPath: /etc/dcgm-exporter/metrics.csv
+              subPath: metrics.csv
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: metrics
+            initialDelaySeconds: 15
+            periodSeconds: 30
+      volumes:
+        - name: metrics-config
+          configMap:
+            name: {{ include "ai-obs-demo.fullname" . }}-dcgm-metrics
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "ai-obs-demo.fullname" . }}-dcgm-exporter
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ai-obs-demo.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.dcgmExporter.service.port }}
+      targetPort: metrics
+      protocol: TCP
+      name: metrics
+  selector:
+    {{- include "ai-obs-demo.selectorLabels" (dict "name" "dcgm-exporter" "root" .) | nindent 4 }}
+{{- end }}

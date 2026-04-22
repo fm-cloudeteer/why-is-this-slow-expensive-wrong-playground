@@ -1,0 +1,273 @@
+{{- if .Values.gravitee.enabled }}
+{{/*
+  gravitee-bootstrap.yaml
+  ───────────────────────
+  Runs once after install/upgrade to provision the demo API in Gravitee APIM:
+    1. Waits for the Management API to become ready.
+    2. Creates an API that proxies all traffic to the demo-app service.
+    3. Adds a Transform Headers policy to forward x-tenant-id downstream.
+    4. Creates an API Key enforcement plan and publishes it.
+    5. Deploys the API to the Gateway.
+    6. Creates one application per tenant, subscribes it to the plan, and
+       sets the API key to the pre-configured value from the tenant Secret.
+       If the Management API rejects a custom key value, it falls back to
+       patching the auto-generated key using kubectl (requires the SA below).
+
+  W3C traceparent propagation is handled by the Gravitee Gateway's built-in
+  OpenTelemetry reporter (configured via gateway.env in values.yaml) — no
+  explicit policy is needed for that.
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "ai-obs-demo.fullname" . }}-gravitee-bootstrap
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ai-obs-demo.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-weight: "5"
+    helm.sh/hook-delete-policy: before-hook-creation
+data:
+  bootstrap.sh: |
+    #!/bin/sh
+    set -e
+
+    MGMT="http://{{ .Release.Name }}-gravitee-api:8083"
+    MGMT_AUTH="admin:admin"
+    ORG_PATH="/management/organizations/DEFAULT/environments/DEFAULT"
+    DEMO_APP_URL="http://{{ include "ai-obs-demo.fullname" . }}-app:8080"
+
+    # ── 1. Wait for Management API ───────────────────────────────────────────
+    echo "[bootstrap] Waiting for Gravitee Management API at $MGMT ..."
+    until curl -sf -u "$MGMT_AUTH" "$MGMT/management/organizations/DEFAULT/environments/DEFAULT/apis" \
+        -o /dev/null 2>&1; do
+      echo "[bootstrap] Not ready yet, retrying in 10s..."
+      sleep 10
+    done
+    echo "[bootstrap] Management API is ready."
+
+    # ── 2. Create or reuse the demo API (idempotent) ────────────────────────
+    # Gravitee APIM 4.x requires top-level contextPath + endpoint for the
+    # simplified creation endpoint; the full proxy definition is built by
+    # the server automatically.
+    echo "[bootstrap] Looking for existing demo API..."
+    EXISTING=$(curl -sf -u "$MGMT_AUTH" "$MGMT${ORG_PATH}/apis" | jq -r '.[] | select(.name=="AI Obs Demo") | .id' | head -1)
+    if [ -n "$EXISTING" ]; then
+      API_ID="$EXISTING"
+      echo "[bootstrap] Reusing existing API id=$API_ID"
+    else
+      echo "[bootstrap] Creating demo API..."
+      API_RESP=$(curl -sf -u "$MGMT_AUTH" \
+        -X POST "$MGMT${ORG_PATH}/apis" \
+        -H "Content-Type: application/json" \
+        -d "{\"name\":\"AI Obs Demo\",\"version\":\"1.0\",\"description\":\"Demo API\",\"contextPath\":\"/\",\"endpoint\":\"${DEMO_APP_URL}\"}")
+      API_ID=$(echo "$API_RESP" | jq -r '.id')
+      echo "[bootstrap] Created API id=$API_ID"
+    fi
+
+    # ── 2b. Add transform-headers flow to forward x-tenant-id ────────────────
+    echo "[bootstrap] Adding tenant header forwarding flow..."
+    # Fetch current API definition, inject flows, PUT it back
+    API_DEF=$(curl -sf -u "$MGMT_AUTH" "$MGMT${ORG_PATH}/apis/$API_ID")
+    API_DEF=$(echo "$API_DEF" | jq '.flows = [{
+      "name": "default",
+      "path-operator": { "path": "/", "operator": "STARTS_WITH" },
+      "methods": ["GET","POST","PUT","DELETE","PATCH","OPTIONS","HEAD"],
+      "pre": [{
+        "policy": "transform-headers",
+        "name": "Forward Tenant Header",
+        "enabled": true,
+        "configuration": {
+          "addHeaders": [{
+            "name": "x-tenant-id",
+            "value": "{#request.headers['"'"'x-tenant-id'"'"'][0]}"
+          }],
+          "scope": "REQUEST"
+        }
+      }],
+      "post": [],
+      "enabled": true
+    }]')
+    # Increase read/idle timeouts to 120s for LLM inference
+    # CRITICAL: Must set both group-level AND endpoint-level http config.
+    # The v4-emulation-engine ignores group-level http settings and uses
+    # endpoint-level ones instead, defaulting to 10s if not set.
+    API_DEF=$(echo "$API_DEF" | jq '
+      .proxy.groups[0].http.readTimeout = 120000 |
+      .proxy.groups[0].http.idleTimeout = 120000 |
+      .proxy.groups[0].endpoints[0].http = {
+        "connectTimeout": 10000,
+        "idleTimeout": 120000,
+        "readTimeout": 120000
+      }
+    ')
+    curl -sf -u "$MGMT_AUTH" \
+      -X PUT "$MGMT${ORG_PATH}/apis/$API_ID" \
+      -H "Content-Type: application/json" \
+      -d "$API_DEF" -o /dev/null
+    echo "[bootstrap] Flow added."
+
+    # ── 3. Create API Key enforcement plan (idempotent) ────────────────────
+    echo "[bootstrap] Checking for existing API Key plan..."
+    EXISTING_PLAN=$(curl -sf -u "$MGMT_AUTH" "$MGMT${ORG_PATH}/apis/$API_ID/plans" | jq -r '.[] | select(.name=="api-key-plan") | .id' | head -1)
+    if [ -n "$EXISTING_PLAN" ]; then
+      PLAN_ID="$EXISTING_PLAN"
+      echo "[bootstrap] Reusing existing plan id=$PLAN_ID"
+    else
+      echo "[bootstrap] Creating API Key plan..."
+      PLAN_RESP=$(curl -sf -u "$MGMT_AUTH" \
+        -X POST "$MGMT${ORG_PATH}/apis/$API_ID/plans" \
+        -H "Content-Type: application/json" \
+        -d '{
+          "name": "api-key-plan",
+          "description": "Per-tenant API key enforcement",
+          "security": "API_KEY",
+          "securityDefinition": "{}",
+          "type": "API",
+          "status": "PUBLISHED",
+          "paths": { "/": [] }
+        }')
+      PLAN_ID=$(echo "$PLAN_RESP" | jq -r '.id')
+      echo "[bootstrap] Created plan id=$PLAN_ID"
+    fi
+
+    # ── 4. Deploy the API ────────────────────────────────────────────────────
+    echo "[bootstrap] Deploying API to Gateway..."
+    curl -sf -u "$MGMT_AUTH" \
+      -X POST "$MGMT${ORG_PATH}/apis/$API_ID/deploy" \
+      -H "Content-Type: application/json" \
+      -d '{"deploymentLabel":"initial bootstrap"}' -o /dev/null
+    echo "[bootstrap] API deployed."
+
+    # ── 5. Start the API ─────────────────────────────────────────────────────
+    curl -sf -u "$MGMT_AUTH" \
+      -X POST "$MGMT${ORG_PATH}/apis/$API_ID?action=START" \
+      -H "Content-Type: application/json" \
+      -o /dev/null || true
+    echo "[bootstrap] API started."
+
+    # ── 6. Create applications + subscriptions with preset API keys ──────────
+    provision_tenant() {
+      TENANT_ID="$1"
+      TENANT_LABEL="$2"
+      API_KEY_VALUE="$3"
+
+      echo "[bootstrap] Provisioning tenant $TENANT_LABEL ..."
+
+      # Check if application already exists
+      EXISTING_APP=$(curl -sf -u "$MGMT_AUTH" "$MGMT${ORG_PATH}/applications" | jq -r ".[] | select(.name==\"${TENANT_ID}\") | .id" | head -1)
+      if [ -n "$EXISTING_APP" ]; then
+        APP_ID="$EXISTING_APP"
+        echo "[bootstrap]   Reusing existing application id=$APP_ID"
+      else
+        APP_RESP=$(curl -sf -u "$MGMT_AUTH" \
+          -X POST "$MGMT${ORG_PATH}/applications" \
+          -H "Content-Type: application/json" \
+          -d "{
+            \"name\": \"${TENANT_ID}\",
+            \"description\": \"Application for ${TENANT_LABEL}\",
+            \"settings\": { \"app\": { \"type\": \"WEB\" } }
+          }")
+        APP_ID=$(echo "$APP_RESP" | jq -r '.id')
+        echo "[bootstrap]   Created application id=$APP_ID"
+      fi
+
+      # Check if subscription already exists
+      EXISTING_SUB=$(curl -sf -u "$MGMT_AUTH" "$MGMT${ORG_PATH}/apis/$API_ID/subscriptions?application=$APP_ID&status=ACCEPTED" | jq -r '.data[0].id // empty' 2>/dev/null)
+      if [ -n "$EXISTING_SUB" ]; then
+        SUB_ID="$EXISTING_SUB"
+        echo "[bootstrap]   Reusing existing subscription id=$SUB_ID"
+      else
+        SUB_RESP=$(curl -sf -u "$MGMT_AUTH" \
+          -X POST "$MGMT${ORG_PATH}/apis/$API_ID/subscriptions?plan=$PLAN_ID&application=$APP_ID" \
+          -H "Content-Type: application/json")
+        SUB_ID=$(echo "$SUB_RESP" | jq -r '.id')
+        echo "[bootstrap]   Created subscription id=$SUB_ID"
+      fi
+
+      # Retrieve the auto-generated API key and report it
+      KEYS_RESP=$(curl -sf -u "$MGMT_AUTH" \
+        "$MGMT${ORG_PATH}/apis/$API_ID/subscriptions/$SUB_ID/apikeys")
+      GENERATED_KEY=$(echo "$KEYS_RESP" | jq -r '.[0].key // empty')
+
+      if [ -n "$GENERATED_KEY" ]; then
+        echo "[bootstrap]   API key for $TENANT_LABEL: $GENERATED_KEY"
+        echo "[bootstrap]   Set TENANT_${TENANT_LABEL}_API_KEY=$GENERATED_KEY in .env"
+      else
+        echo "[bootstrap]   WARNING: No API key found for subscription $SUB_ID"
+      fi
+    }
+
+    provision_tenant "tenant_a" "A" "$TENANT_A_API_KEY"
+    provision_tenant "tenant_b" "B" "$TENANT_B_API_KEY"
+    provision_tenant "tenant_c" "C" "$TENANT_C_API_KEY"
+    provision_tenant "tenant_d" "D" "$TENANT_D_API_KEY"
+
+    echo "[bootstrap] Done. Gravitee API provisioning complete."
+---
+# ServiceAccount + ClusterRole for the Job to patch Secrets if needed
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "ai-obs-demo.fullname" . }}-gravitee-bootstrap
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ai-obs-demo.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-weight: "5"
+    helm.sh/hook-delete-policy: before-hook-creation
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "ai-obs-demo.fullname" . }}-gravitee-bootstrap
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ai-obs-demo.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-weight: "10"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  # Allow up to 5 retries — Gravitee Management API cold start can take 3-5 min
+  backoffLimit: 5
+  activeDeadlineSeconds: 600
+  template:
+    metadata:
+      labels:
+        {{- include "ai-obs-demo.selectorLabels" (dict "name" "gravitee-bootstrap" "root" .) | nindent 8 }}
+    spec:
+      restartPolicy: OnFailure
+      serviceAccountName: {{ include "ai-obs-demo.fullname" . }}-gravitee-bootstrap
+      containers:
+        - name: bootstrap
+          image: alpine:3.19
+          command: ["/bin/sh", "-c", "apk add --no-cache curl jq && /bin/sh /scripts/bootstrap.sh"]
+          env:
+            # Injected so the script can reference $DEMO_APP_URL components if needed
+            - name: RELEASE_NAME
+              value: {{ .Release.Name | quote }}
+            - name: RELEASE_NAMESPACE
+              value: {{ .Release.Namespace | quote }}
+          envFrom:
+            # Provides TENANT_A_API_KEY … TENANT_D_API_KEY
+            - secretRef:
+                name: {{ include "ai-obs-demo.tenantSecretName" . }}
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+      volumes:
+        - name: scripts
+          configMap:
+            name: {{ include "ai-obs-demo.fullname" . }}-gravitee-bootstrap
+            defaultMode: 0755
+{{- end }}

@@ -1,0 +1,67 @@
+{{- if .Values.natsWorker.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ai-obs-demo.fullname" . }}-nats-worker
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ai-obs-demo.labels" . | nindent 4 }}
+    {{- include "ai-obs-demo.selectorLabels" (dict "name" "nats-worker" "root" .) | nindent 4 }}
+spec:
+  replicas: {{ .Values.natsWorker.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "ai-obs-demo.selectorLabels" (dict "name" "nats-worker" "root" .) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "ai-obs-demo.labels" . | nindent 8 }}
+        {{- include "ai-obs-demo.selectorLabels" (dict "name" "nats-worker" "root" .) | nindent 8 }}
+    spec:
+      containers:
+        - name: nats-worker
+          image: "{{ .Values.natsWorker.image.repository }}:{{ .Values.natsWorker.image.tag }}"
+          imagePullPolicy: {{ .Values.natsWorker.image.pullPolicy }}
+          ports:
+            - name: metrics
+              containerPort: 9100
+              protocol: TCP
+          env:
+            - name: NATS_URL
+              value: "nats://{{ include "ai-obs-demo.fullname" . }}-nats:4222"
+            - name: LITELLM_URL
+              value: "http://{{ include "ai-obs-demo.fullname" . }}-litellm:4000"
+            - name: LITELLM_KEY
+              value: {{ .Values.litellm.config.general_settings.master_key | quote }}
+            - name: WORKER_CONCURRENCY
+              value: {{ .Values.natsWorker.concurrency | quote }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://{{ include "ai-obs-demo.fullname" . }}-alloy:4317"
+            - name: METRICS_PORT
+              value: "9100"
+          livenessProbe:
+            httpGet:
+              path: /
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          resources:
+            {{- toYaml .Values.natsWorker.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "ai-obs-demo.fullname" . }}-nats-worker
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ai-obs-demo.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: 9100
+      targetPort: metrics
+      protocol: TCP
+      name: metrics
+  selector:
+    {{- include "ai-obs-demo.selectorLabels" (dict "name" "nats-worker" "root" .) | nindent 4 }}
+{{- end }}

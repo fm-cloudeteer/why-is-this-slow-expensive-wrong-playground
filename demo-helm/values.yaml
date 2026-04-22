@@ -1,0 +1,832 @@
+# =============================================================================
+# ai-obs-demo — values.yaml
+# =============================================================================
+# Sensible defaults for a single-node demo cluster.
+# Override per-environment in values-prod.yaml / values-local.yaml.
+#
+# Quick-start:
+#   helm dependency update
+#   helm install ai-obs-demo . -f values.yaml --namespace ai-obs-demo --create-namespace
+# =============================================================================
+
+global:
+  # Used as a label on all demo resources for easy cleanup
+  # kubectl delete all -l app.kubernetes.io/part-of=ai-obs-demo
+  partOf: ai-obs-demo
+  # Bitnami subchart image verification — Gravitee bundles bitnamilegacy images
+  security:
+    allowInsecureImages: true
+
+# =============================================================================
+# Demo app (Layer 3 — FastAPI service)
+# =============================================================================
+demoApp:
+  enabled: true
+  image:
+    repository: ai-obs-demo-app
+    tag: "latest"
+    pullPolicy: Never
+  replicaCount: 1
+  service:
+    type: ClusterIP
+    port: 8080
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  env:
+    LITELLM_URL: "http://ai-obs-demo-litellm:4000"
+    LANGFUSE_URL: "http://ai-obs-demo-langfuse-web:3000"
+    FEATURE_FLAG_URL: "http://ai-obs-demo-app:8080"
+  # Langfuse credentials — override with your actual keys
+  # or use an existing secret (see langfuseExistingSecret below)
+  langfuse:
+    publicKey: "pk-lf-1980b1a4-1ad0-4955-bfe4-25bc2887111e"
+    secretKey: "sk-lf-fa520024-ff57-4092-b039-747d313710c4"
+  langfuseExistingSecret: ""  # name of existing Secret with keys LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY
+
+# =============================================================================
+# LiteLLM proxy (Layer 2 — model router)
+# =============================================================================
+litellm:
+  enabled: true
+  image:
+    repository: ghcr.io/berriai/litellm
+    tag: "main-latest"
+    pullPolicy: IfNotPresent
+  replicaCount: 1
+  service:
+    type: ClusterIP
+    port: 4000
+  resources:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+  # LiteLLM config — mounted as a ConfigMap
+  config:
+    model_list:
+      - model_name: cyankiwi/Qwen3.5-9B-AWQ-4bit
+        litellm_params:
+          model: openai/cyankiwi/Qwen3.5-9B-AWQ-4bit
+          api_base: "http://ai-obs-demo-vllm:8000/v1"
+          api_key: "dummy"
+        model_info:
+          input_cost_per_token: 0.00001     # $10.00 per 1M input tokens
+          output_cost_per_token: 0.00002    # $20.00 per 1M output tokens
+    general_settings:
+      master_key: "sk-demo-master-key-change-me"
+    litellm_settings:
+      success_callback: ["langfuse", "otel"]
+      failure_callback: ["langfuse", "otel"]
+      langfuse_public_key: "pk-lf-1980b1a4-1ad0-4955-bfe4-25bc2887111e"
+      langfuse_secret_key: "sk-lf-fa520024-ff57-4092-b039-747d313710c4"
+      langfuse_host: "http://ai-obs-demo-langfuse-web:3000"
+
+# =============================================================================
+# vLLM inference server (Layer 2 — LLM runtime)
+# Requires a GPU node. Set nodeSelector / tolerations to match your GPU node.
+# =============================================================================
+vllm:
+  enabled: true
+  image:
+    repository: vllm/vllm-openai
+    tag: "latest"
+    pullPolicy: IfNotPresent
+  replicaCount: 4
+  service:
+    type: ClusterIP
+    port: 8000
+  model: "cyankiwi/Qwen3.5-9B-AWQ-4bit"
+  # HuggingFace token for gated models
+  hfTokenSecret: ""          # name of Secret with key HF_TOKEN
+  hfToken: ""                # or set directly (not recommended for production)
+  gpu:
+    enabled: true
+    count: 1                 # number of GPUs to request per pod
+  resources:
+    requests:
+      cpu: 2000m
+      memory: 16Gi
+    limits:
+      cpu: 8000m
+      memory: 32Gi
+  nodeSelector: {}
+    # accelerator: nvidia-rtx-3090
+  tolerations: []
+    # - key: nvidia.com/gpu
+    #   operator: Exists
+    #   effect: NoSchedule
+  extraArgs:
+    - "--max-model-len=4096"
+    - "--gpu-memory-utilization=0.90"
+  # Model cache volume — controls how the HuggingFace cache is stored
+  # type: emptyDir (default, re-downloads every restart)
+  #        hostPath (pre-downloaded model on node, survives restarts)
+  #        pvc      (PersistentVolumeClaim, survives restarts)
+  modelCache:
+    type: hostPath
+    hostPath: /opt/models/huggingface
+    # pvcName: ""  # only needed if type=pvc
+
+# =============================================================================
+# NATS JetStream queue (Layer 2 — inference queue)
+# =============================================================================
+nats:
+  enabled: true
+  config:
+    jetstream:
+      enabled: true
+      memoryStore:
+        enabled: true
+        maxSize: 1Gi
+    monitor:
+      enabled: true
+      port: 8222
+  promExporter:
+    enabled: true
+    image:
+      repository: natsio/prometheus-nats-exporter
+      tag: "0.15.0"
+    port: 7777
+  reloader:
+    enabled: false
+  service:
+    ports:
+      client:
+        port: 4222
+  container:
+    merge:
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+
+# =============================================================================
+# NATS Worker (Layer 2 — inference queue consumer)
+# Pulls requests from the NATS JetStream "inference" stream, forwards to
+# LiteLLM, and replies. Exposes queue wait histogram on :9100/metrics.
+# =============================================================================
+natsWorker:
+  enabled: true
+  image:
+    repository: ai-obs-demo-nats-worker
+    tag: "v2"
+    pullPolicy: Never
+  replicaCount: 1
+  concurrency: 32      # concurrent LiteLLM requests per worker pod
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# =============================================================================
+# DCGM exporter — GPU metrics
+# Runs as a DaemonSet on GPU nodes only
+# =============================================================================
+dcgmExporter:
+  enabled: true
+  image:
+    repository: nvcr.io/nvidia/k8s/dcgm-exporter
+    tag: "3.3.5-3.4.0-ubuntu22.04"
+    pullPolicy: IfNotPresent
+  service:
+    port: 9400
+  nodeSelector: {}
+    # accelerator: nvidia-rtx-3090
+  tolerations: []
+    # - key: nvidia.com/gpu
+    #   operator: Exists
+    #   effect: NoSchedule
+  # Metrics profile — subset relevant for demo
+  metricsConfig: |
+    DCGM_FI_DEV_GPU_UTIL,         gauge, GPU utilization (%)
+    DCGM_FI_DEV_FB_USED,          gauge, Framebuffer memory used (MiB)
+    DCGM_FI_DEV_FB_FREE,          gauge, Framebuffer memory free (MiB)
+    DCGM_FI_DEV_POWER_USAGE,      gauge, Power draw (W)
+    DCGM_FI_PROF_GR_ENGINE_ACTIVE,gauge, Graphics engine active ratio
+
+# =============================================================================
+# Tenants — API keys provisioned into Gravitee and the demo app
+# =============================================================================
+tenants:
+  tenantA:
+    id: tenant_a
+    apiKey: "gw-tenant-a-change-me"
+  tenantB:
+    id: tenant_b
+    apiKey: "gw-tenant-b-change-me"
+  tenantC:
+    id: tenant_c
+    apiKey: "gw-tenant-c-change-me"
+  tenantD:
+    id: tenant_d
+    apiKey: "gw-tenant-d-change-me"
+
+# =============================================================================
+# Grafana (upstream chart overrides)
+# =============================================================================
+grafana:
+  enabled: true
+  adminPassword: "demo-grafana-admin"
+  service:
+    type: ClusterIP
+    port: 80
+  persistence:
+    enabled: false          # no persistence needed for demo
+  datasources:
+    datasources.yaml:
+      apiVersion: 1
+      datasources:
+        - name: Prometheus
+          type: prometheus
+          url: http://ai-obs-demo-prometheus-server:80
+          isDefault: true
+        - name: Loki
+          type: loki
+          url: http://ai-obs-demo-loki-gateway:80
+        - name: Tempo
+          type: tempo
+          url: http://ai-obs-demo-tempo:3100
+          jsonData:
+            tracesToLogsV2:
+              datasourceUid: loki
+              filterByTraceID: true
+            tracesToMetrics:
+              datasourceUid: prometheus
+  dashboardProviders:
+    dashboardproviders.yaml:
+      apiVersion: 1
+      providers:
+        - name: demo
+          orgId: 1
+          folder: "AI Obs Demo"
+          type: file
+          options:
+            path: /var/lib/grafana/dashboards/demo
+  dashboardsConfigMaps:
+    demo: "ai-obs-demo-dashboards"
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# =============================================================================
+# Loki (upstream chart overrides)
+# =============================================================================
+loki:
+  enabled: true
+  deploymentMode: SingleBinary
+  loki:
+    auth_enabled: false
+    schemaConfig:
+      configs:
+        - from: "2024-01-01"
+          store: tsdb
+          object_store: filesystem
+          schema: v13
+          index:
+            prefix: loki_index_
+            period: 24h
+    commonConfig:
+      replication_factor: 1
+    storage:
+      type: filesystem
+  singleBinary:
+    replicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+  read:
+    replicas: 0
+  write:
+    replicas: 0
+  backend:
+    replicas: 0
+  monitoring:
+    selfMonitoring:
+      enabled: false
+    lokiCanary:
+      enabled: false
+  test:
+    enabled: false
+  gateway:
+    affinity:
+      podAntiAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution: []
+
+# =============================================================================
+# Tempo (upstream chart overrides)
+# =============================================================================
+tempo:
+  enabled: true
+  tempo:
+    metricsGenerator:
+      enabled: true
+      remoteWriteUrl: "http://ai-obs-demo-prometheus-server:80/api/v1/write"
+    storage:
+      trace:
+        backend: local
+        local:
+          path: /var/tempo/traces
+  persistence:
+    enabled: false
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
+
+# =============================================================================
+# Grafana Alloy (upstream chart overrides)
+# =============================================================================
+alloy:
+  enabled: true
+  alloy:
+    extraPorts:
+      - name: otlp-grpc
+        port: 4317
+        targetPort: 4317
+        protocol: TCP
+      - name: otlp-http
+        port: 4318
+        targetPort: 4318
+        protocol: TCP
+    configMap:
+      create: true
+      content: |
+        // ── Prometheus scrape targets ────────────────────────────────────
+        prometheus.scrape "vllm" {
+          targets = [{ "__address__" = "ai-obs-demo-vllm:8000", "job" = "vllm" }]
+          scrape_interval = "15s"
+          forward_to = [prometheus.remote_write.default.receiver]
+        }
+
+        // NATS monitoring is JSON-only on port 8222, but the prometheus-nats-exporter
+        // sidecar converts it to Prometheus format on port 7777.
+        prometheus.scrape "nats" {
+          targets = [{ "__address__" = "ai-obs-demo-nats-0.ai-obs-demo-nats-headless:7777", "job" = "nats" }]
+          scrape_interval = "15s"
+          forward_to = [prometheus.remote_write.default.receiver]
+        }
+
+        prometheus.scrape "nats_worker" {
+          targets = [{ "__address__" = "ai-obs-demo-nats-worker:9100", "job" = "nats-worker" }]
+          scrape_interval = "15s"
+          forward_to = [prometheus.remote_write.default.receiver]
+        }
+
+        prometheus.scrape "dcgm" {
+          targets = [{ "__address__" = "ai-obs-demo-dcgm-exporter:9400", "job" = "dcgm" }]
+          scrape_interval = "15s"
+          forward_to = [prometheus.remote_write.default.receiver]
+        }
+
+        prometheus.scrape "demo_app" {
+          targets = [{ "__address__" = "ai-obs-demo-app:8080", "job" = "demo-app" }]
+          metrics_path = "/metrics"
+          scrape_interval = "15s"
+          forward_to = [prometheus.remote_write.default.receiver]
+        }
+
+        // ── Remote write to Prometheus ───────────────────────────────────
+        prometheus.remote_write "default" {
+          endpoint {
+            url = "http://ai-obs-demo-prometheus-server:80/api/v1/write"
+          }
+        }
+
+        // ── OTel receiver — accepts traces from all services ─────────────
+        otelcol.receiver.otlp "default" {
+          grpc { endpoint = "0.0.0.0:4317" }
+          http { endpoint = "0.0.0.0:4318" }
+          output {
+            traces = [otelcol.exporter.otlp.tempo.input]
+            logs   = [otelcol.exporter.loki.default.input]
+          }
+        }
+
+        // ── Export traces to Tempo ───────────────────────────────────────
+        otelcol.exporter.otlp "tempo" {
+          client {
+            endpoint = "ai-obs-demo-tempo:4317"
+            tls { insecure = true }
+          }
+        }
+
+        // ── Export logs to Loki ──────────────────────────────────────────
+        otelcol.exporter.loki "default" {
+          forward_to = [loki.write.default.receiver]
+        }
+
+        loki.write "default" {
+          endpoint {
+            url = "http://ai-obs-demo-loki-gateway:80/loki/api/v1/push"
+          }
+        }
+
+        // ── Kubernetes pod log collection ────────────────────────────────
+        discovery.kubernetes "pods" {
+          role = "pod"
+          namespaces {
+            names = ["ai-obs-demo"]
+          }
+        }
+
+        discovery.relabel "pod_logs" {
+          targets = discovery.kubernetes.pods.targets
+
+          rule {
+            source_labels = ["__meta_kubernetes_namespace"]
+            target_label  = "namespace"
+          }
+          rule {
+            source_labels = ["__meta_kubernetes_pod_name"]
+            target_label  = "pod"
+          }
+          rule {
+            source_labels = ["__meta_kubernetes_pod_container_name"]
+            target_label  = "container"
+          }
+          rule {
+            source_labels = ["__meta_kubernetes_pod_label_app_kubernetes_io_name"]
+            target_label  = "app"
+          }
+        }
+
+        loki.source.kubernetes "pods" {
+          targets    = discovery.relabel.pod_logs.output
+          forward_to = [loki.write.default.receiver]
+        }
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# =============================================================================
+# Prometheus (upstream chart overrides)
+# =============================================================================
+prometheus:
+  enabled: true
+  server:
+    extraFlags:
+      - "web.enable-remote-write-receiver"   # required for Alloy to push metrics
+    persistentVolume:
+      enabled: false
+    resources:
+      requests:
+        cpu: 200m
+        memory: 512Mi
+      limits:
+        cpu: 1000m
+        memory: 2Gi
+  alertmanager:
+    enabled: false
+  prometheus-pushgateway:
+    enabled: false
+  kube-state-metrics:
+    enabled: true
+  prometheus-node-exporter:
+    enabled: true
+
+# =============================================================================
+# Langfuse bootstrap Job — seeds user, org, project, and API key on install
+# =============================================================================
+langfuseBootstrap:
+  enabled: false  # Deprecated: Langfuse v3 uses headless init via LANGFUSE_INIT_* env vars
+  adminName: "Demo Admin"
+  adminEmail: "admin@demo.local"
+  adminPassword: "demo-admin-password"
+  orgName: "demo-org"
+  projectName: "demo-project"
+
+# =============================================================================
+# Langfuse (upstream chart overrides)
+# =============================================================================
+langfuse:
+  enabled: true
+  langfuse:
+    salt:
+      value: "demo-salt-change-me"
+    nextauth:
+      url: "http://localhost:3000"
+      secret:
+        value: "demo-nextauth-secret-change-me"
+    encryptionKey:
+      value: "0000000000000000000000000000000000000000000000000000000000000001"
+    features:
+      telemetryEnabled: false
+      signUpDisabled: false
+    logging:
+      level: info
+    # Headless initialization — creates org, project, user, and API keys on startup
+    additionalEnv:
+      - name: LANGFUSE_INIT_ORG_ID
+        value: "demo-org"
+      - name: LANGFUSE_INIT_ORG_NAME
+        value: "Demo Org"
+      - name: LANGFUSE_INIT_PROJECT_ID
+        value: "demo-project"
+      - name: LANGFUSE_INIT_PROJECT_NAME
+        value: "AI Obs Demo"
+      - name: LANGFUSE_INIT_PROJECT_PUBLIC_KEY
+        value: "pk-lf-1980b1a4-1ad0-4955-bfe4-25bc2887111e"
+      - name: LANGFUSE_INIT_PROJECT_SECRET_KEY
+        value: "sk-lf-fa520024-ff57-4092-b039-747d313710c4"
+      - name: LANGFUSE_INIT_USER_EMAIL
+        value: "admin@demo.local"
+      - name: LANGFUSE_INIT_USER_NAME
+        value: "Demo Admin"
+      - name: LANGFUSE_INIT_USER_PASSWORD
+        value: "demo-admin-password"
+    web:
+      resources:
+        requests:
+          cpu: 200m
+          memory: 512Mi
+        limits:
+          cpu: 1000m
+          memory: 1Gi
+      service:
+        type: ClusterIP
+        port: 3000
+    worker:
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+  postgresql:
+    deploy: true
+    host: "ai-obs-demo-langfuse-postgresql"
+    fullnameOverride: "ai-obs-demo-langfuse-postgresql"
+    image:
+      repository: bitnamilegacy/postgresql
+    auth:
+      password: "demo-pg-password"
+      database: postgres_langfuse
+    primary:
+      persistence:
+        enabled: true
+        size: 2Gi
+  clickhouse:
+    deploy: true
+    fullnameOverride: "ai-obs-demo-langfuse-clickhouse"
+    image:
+      repository: bitnamilegacy/clickhouse
+    auth:
+      password: "demo-ch-password"
+    zookeeper:
+      fullnameOverride: "ai-obs-demo-langfuse-zookeeper"
+      image:
+        repository: bitnamilegacy/zookeeper
+    persistence:
+      enabled: true
+      size: 5Gi
+    replicaCount: 1
+    shards: 1
+  redis:
+    deploy: true
+    fullnameOverride: "ai-obs-demo-langfuse-redis"
+    image:
+      repository: bitnamilegacy/valkey
+    auth:
+      password: "demo-redis-password"
+    master:
+      persistence:
+        enabled: true
+        size: 1Gi
+  s3:
+    deploy: true
+    fullnameOverride: "ai-obs-demo-langfuse-s3"
+    image:
+      repository: bitnamilegacy/minio
+    auth:
+      rootPassword: "demo-minio-password"
+    persistence:
+      enabled: false
+
+# =============================================================================
+# Gravitee APIM (Layer 1 — API gateway)
+# Chart 4.11.3 bundles MongoDB + Elasticsearch as subcharts.
+# The bootstrap Job (templates/gravitee-bootstrap.yaml)
+# provisions the demo API + per-tenant API key plan post-install.
+# =============================================================================
+
+# ── Gravitee APIM chart values (alias: gravitee) ─────────────────────────────
+gravitee:
+  enabled: true
+
+  # Bundled MongoDB subchart
+  mongodb:
+    enabled: true
+    fullnameOverride: "ai-obs-demo-gravitee-mongodb"
+    architecture: standalone
+    auth:
+      enabled: false
+    persistence:
+      enabled: false
+    podSecurityContext:
+      enabled: false
+    containerSecurityContext:
+      enabled: false
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+
+  # Bundled Elasticsearch subchart (Bitnami)
+  elasticsearch:
+    enabled: true
+    fullnameOverride: "ai-obs-demo-gravitee-elasticsearch"
+    master:
+      replicaCount: 1
+      persistence:
+        enabled: false
+      resources:
+        requests:
+          cpu: 200m
+          memory: 1Gi
+        limits:
+          cpu: 1000m
+          memory: 1536Mi
+    data:
+      replicaCount: 0
+    coordinating:
+      replicaCount: 0
+    ingest:
+      replicaCount: 0
+    security:
+      enabled: false
+    sysctlImage:
+      enabled: false
+    volumePermissions:
+      enabled: false
+
+  mongo:
+    uri: "mongodb://ai-obs-demo-gravitee-mongodb:27017/gravitee?serverSelectionTimeoutMS=5000&connectTimeoutMS=5000"
+
+  es:
+    enabled: true
+    endpoints:
+      - http://ai-obs-demo-gravitee-elasticsearch:9200
+    security:
+      enabled: false
+
+  # Management API — needed for bootstrap Job + audience inspection via Console
+  api:
+    enabled: true
+    replicaCount: 1
+    image:
+      repository: graviteeio/apim-management-api
+      tag: "4.11.3"
+      pullPolicy: IfNotPresent
+    autoscaling:
+      enabled: false
+    service:
+      type: ClusterIP
+      externalPort: 8083
+      internalPort: 8083
+    ingress:
+      management:
+        enabled: false
+      portal:
+        enabled: false
+    resources:
+      requests:
+        cpu: 500m
+        memory: 1Gi
+      limits:
+        cpu: 1000m
+        memory: 2Gi
+
+  # Gateway — handles all demo traffic (API key enforcement + trace propagation)
+  gateway:
+    enabled: true
+    replicaCount: 1
+    image:
+      repository: graviteeio/apim-gateway
+      tag: "4.11.3"
+      pullPolicy: IfNotPresent
+    autoscaling:
+      enabled: false
+    service:
+      type: ClusterIP
+      externalPort: 8082
+      internalPort: 8082
+    ingress:
+      enabled: false
+    http:
+      requestTimeout: 200000
+      requestTimeoutGraceDelay: 60
+    # Native OTEL support (APIM 4.6+, replaces old services.tracing env vars)
+    services:
+      opentelemetry:
+        enabled: true
+        exporter:
+          endpoint: http://ai-obs-demo-alloy:4317
+          protocol: grpc
+      metrics:
+        enabled: false
+        prometheus:
+          enabled: true
+    reporters:
+      elasticsearch:
+        enabled: false
+    env:
+      - name: gravitee_http_requestTimeout
+        value: "120000"
+      - name: gravitee_services_opentelemetry_verbose
+        value: "true"
+    resources:
+      requests:
+        cpu: 500m
+        memory: 512Mi
+      limits:
+        cpu: 1000m
+        memory: 1Gi
+
+  # Management Console UI — visible to demo audience during the talk
+  ui:
+    enabled: true
+    replicaCount: 1
+    image:
+      repository: graviteeio/apim-management-ui
+      tag: "4.11.3"
+      pullPolicy: IfNotPresent
+    service:
+      type: ClusterIP
+      externalPort: 8002
+      internalPort: 8080
+    ingress:
+      enabled: false
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 250m
+        memory: 256Mi
+
+  # Developer Portal — not used in this demo
+  portal:
+    enabled: false
+
+# =============================================================================
+# Ingress — optional, exposes Grafana and Langfuse externally
+# =============================================================================
+ingress:
+  enabled: false
+  className: nginx
+  annotations: {}
+  hosts:
+    grafana: grafana.demo.local
+    langfuse: langfuse.demo.local
+  tls: []
+
+# =============================================================================
+# Orchestrator (load generator Job)
+# =============================================================================
+orchestrator:
+  enabled: false                     # set to true to run, or use --set
+  image:
+    repository: ai-obs-demo-orchestrator
+    tag: "latest"
+    pullPolicy: Never
+  args: []                           # e.g. ["--phase", "slow"] or ["--dry-run"]
+  burstRps: "30"
+  activeDeadlineSeconds: 1200        # 20 min max
+  tenantKeys:
+    a: "449ea01c-7088-4daa-9ea0-1c7088fdaa30"
+    b: "08a78ccc-6365-45eb-a78c-cc6365c5eb80"
+    c: "39bda341-f075-4ca2-bda3-41f0757ca20d"
+    d: "ac99d150-2640-4dc9-99d1-502640adc9d5"

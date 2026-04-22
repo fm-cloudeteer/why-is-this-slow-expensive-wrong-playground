@@ -1,0 +1,229 @@
+{{- if .Values.langfuseBootstrap.enabled }}
+{{/*
+  langfuse-bootstrap.yaml
+  DEPRECATED: Langfuse v3 uses headless initialization via LANGFUSE_INIT_* env vars.
+  This Job is kept for reference but disabled by default (langfuseBootstrap.enabled=false).
+
+  ───────────────────────
+  Runs after install/upgrade to seed the Langfuse database with:
+    1. A demo admin user (email/password from values)
+    2. An organization
+    3. A project
+    4. An API key pair (public + secret) matching the keys in values.yaml
+
+  The Job is idempotent — it uses INSERT ... ON CONFLICT DO NOTHING so
+  re-runs after helm upgrade are safe.
+
+  Requires the Langfuse PostgreSQL database to be ready.
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "ai-obs-demo.fullname" . }}-langfuse-bootstrap
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ai-obs-demo.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-weight: "10"
+    helm.sh/hook-delete-policy: before-hook-creation
+data:
+  bootstrap.py: |
+    #!/usr/bin/env python3
+    """Seed Langfuse DB with demo user, org, project, and API key."""
+    import hashlib
+    import os
+    import sys
+    import time
+
+    # ---------- config from env ----------
+    PG_HOST     = os.environ["PGHOST"]
+    PG_PORT     = os.environ.get("PGPORT", "5432")
+    PG_USER     = os.environ.get("PGUSER", "postgres")
+    PG_PASS     = os.environ["PGPASSWORD"]
+    PG_DB       = os.environ.get("PGDATABASE", "langfuse")
+
+    ADMIN_NAME  = os.environ.get("LANGFUSE_ADMIN_NAME", "Demo Admin")
+    ADMIN_EMAIL = os.environ["LANGFUSE_ADMIN_EMAIL"]
+    ADMIN_PASS  = os.environ["LANGFUSE_ADMIN_PASSWORD"]
+
+    ORG_NAME    = os.environ.get("LANGFUSE_ORG_NAME", "demo-org")
+    PROJECT_NAME = os.environ.get("LANGFUSE_PROJECT_NAME", "demo-project")
+
+    PUBLIC_KEY  = os.environ["LANGFUSE_PUBLIC_KEY"]
+    SECRET_KEY  = os.environ["LANGFUSE_SECRET_KEY"]
+
+    # ---------- deterministic IDs ----------
+    USER_ID     = "demo-bootstrap-user-001"
+    ORG_ID      = "demo-bootstrap-org-001"
+    PROJECT_ID  = "demo-bootstrap-project-001"
+    API_KEY_ID  = "demo-bootstrap-apikey-001"
+    ORG_MEMBER_ID = "demo-bootstrap-orgmember-001"
+
+    def wait_for_pg(conn_func, retries=30, delay=5):
+        for i in range(retries):
+            try:
+                conn = conn_func()
+                conn.close()
+                print(f"PostgreSQL ready after {i * delay}s")
+                return
+            except Exception as e:
+                print(f"Waiting for PostgreSQL ({i+1}/{retries}): {e}")
+                time.sleep(delay)
+        print("ERROR: PostgreSQL not ready after retries")
+        sys.exit(1)
+
+    def main():
+        try:
+            import psycopg2
+        except ImportError:
+            # fallback: install at runtime (the python:3.12-slim image doesn't have it)
+            import subprocess
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "--quiet", "psycopg2-binary", "bcrypt"])
+            import psycopg2
+
+        import bcrypt
+
+        connect = lambda: psycopg2.connect(
+            host=PG_HOST, port=PG_PORT, user=PG_USER,
+            password=PG_PASS, dbname=PG_DB
+        )
+
+        wait_for_pg(connect)
+
+        # Hash the admin password with bcrypt (for user login)
+        pw_hash = bcrypt.hashpw(ADMIN_PASS.encode(), bcrypt.gensalt(rounds=11)).decode()
+
+        # Hash the secret key for API key storage
+        sk_bcrypt = bcrypt.hashpw(SECRET_KEY.encode(), bcrypt.gensalt(rounds=11)).decode()
+        sk_sha256 = hashlib.sha256(SECRET_KEY.encode()).hexdigest()
+
+        # Display key: first 6 + last 4 chars
+        display_sk = SECRET_KEY[:6] + "..." + SECRET_KEY[-4:]
+
+        conn = connect()
+        conn.autocommit = False
+        cur = conn.cursor()
+
+        try:
+            # 1. Create user
+            cur.execute("""
+                INSERT INTO users (id, name, email, password, admin, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, true, NOW(), NOW())
+                ON CONFLICT (email) DO UPDATE SET
+                    password = EXCLUDED.password,
+                    name = EXCLUDED.name,
+                    updated_at = NOW()
+            """, (USER_ID, ADMIN_NAME, ADMIN_EMAIL, pw_hash))
+            print(f"User '{ADMIN_EMAIL}' upserted")
+
+            # 2. Create organization
+            cur.execute("""
+                INSERT INTO organizations (id, name, created_at, updated_at)
+                VALUES (%s, %s, NOW(), NOW())
+                ON CONFLICT (id) DO NOTHING
+            """, (ORG_ID, ORG_NAME))
+            print(f"Organization '{ORG_NAME}' upserted")
+
+            # 3. Create org membership
+            cur.execute("""
+                INSERT INTO organization_memberships (id, org_id, user_id, role, created_at, updated_at)
+                VALUES (%s, %s, %s, 'OWNER', NOW(), NOW())
+                ON CONFLICT (id) DO NOTHING
+            """, (ORG_MEMBER_ID, ORG_ID, USER_ID))
+            print("Org membership created")
+
+            # 4. Create project
+            cur.execute("""
+                INSERT INTO projects (id, name, org_id, created_at, updated_at)
+                VALUES (%s, %s, %s, NOW(), NOW())
+                ON CONFLICT (id) DO NOTHING
+            """, (PROJECT_ID, PROJECT_NAME, ORG_ID))
+            print(f"Project '{PROJECT_NAME}' upserted")
+
+            # 5. Create API key
+            cur.execute("""
+                INSERT INTO api_keys (id, public_key, hashed_secret_key, fast_hashed_secret_key, display_secret_key, project_id, created_at)
+                VALUES (%s, %s, %s, %s, %s, %s, NOW())
+                ON CONFLICT (public_key) DO UPDATE SET
+                    hashed_secret_key = EXCLUDED.hashed_secret_key,
+                    fast_hashed_secret_key = EXCLUDED.fast_hashed_secret_key,
+                    display_secret_key = EXCLUDED.display_secret_key,
+                    project_id = EXCLUDED.project_id
+            """, (API_KEY_ID, PUBLIC_KEY, sk_bcrypt, sk_sha256, display_sk, PROJECT_ID))
+            print(f"API key upserted: public={PUBLIC_KEY}, display_secret={display_sk}")
+
+            conn.commit()
+            print("\nLangfuse bootstrap complete!")
+
+        except Exception as e:
+            conn.rollback()
+            print(f"ERROR: {e}")
+            sys.exit(1)
+        finally:
+            cur.close()
+            conn.close()
+
+    if __name__ == "__main__":
+        main()
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "ai-obs-demo.fullname" . }}-langfuse-bootstrap
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ai-obs-demo.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-weight: "15"
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  backoffLimit: 5
+  activeDeadlineSeconds: 300
+  template:
+    metadata:
+      labels:
+        {{- include "ai-obs-demo.labels" . | nindent 8 }}
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: bootstrap
+          image: python:3.12-slim
+          command: ["python", "/scripts/bootstrap.py"]
+          env:
+            - name: PGHOST
+              value: {{ include "ai-obs-demo.fullname" . }}-postgresql
+            - name: PGPORT
+              value: "5432"
+            - name: PGUSER
+              value: "postgres"
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ai-obs-demo.fullname" . }}-postgresql
+                  key: postgres-password
+            - name: PGDATABASE
+              value: {{ .Values.langfuse.postgresql.auth.database | quote }}
+            - name: LANGFUSE_ADMIN_NAME
+              value: {{ .Values.langfuseBootstrap.adminName | quote }}
+            - name: LANGFUSE_ADMIN_EMAIL
+              value: {{ .Values.langfuseBootstrap.adminEmail | quote }}
+            - name: LANGFUSE_ADMIN_PASSWORD
+              value: {{ .Values.langfuseBootstrap.adminPassword | quote }}
+            - name: LANGFUSE_ORG_NAME
+              value: {{ .Values.langfuseBootstrap.orgName | quote }}
+            - name: LANGFUSE_PROJECT_NAME
+              value: {{ .Values.langfuseBootstrap.projectName | quote }}
+            - name: LANGFUSE_PUBLIC_KEY
+              value: {{ .Values.demoApp.langfuse.publicKey | quote }}
+            - name: LANGFUSE_SECRET_KEY
+              value: {{ .Values.demoApp.langfuse.secretKey | quote }}
+          volumeMounts:
+            - name: script
+              mountPath: /scripts
+      volumes:
+        - name: script
+          configMap:
+            name: {{ include "ai-obs-demo.fullname" . }}-langfuse-bootstrap
+{{- end }}

@@ -1,0 +1,61 @@
+╔══════════════════════════════════════════════════════════════╗
+║  AI Obs Demo — deployed successfully                         ║
+╚══════════════════════════════════════════════════════════════╝
+
+STACK ENDPOINTS (port-forward to access locally)
+─────────────────────────────────────────────────
+
+  Grafana:
+    kubectl port-forward svc/{{ .Release.Name }}-grafana 3000:80 -n {{ .Release.Namespace }}
+    → http://localhost:3000   admin / {{ .Values.grafana.adminPassword }}
+
+  Langfuse:
+    kubectl port-forward svc/{{ .Release.Name }}-langfuse-web 3001:3000 -n {{ .Release.Namespace }}
+    → http://localhost:3001
+
+  Prometheus:
+    kubectl port-forward svc/{{ .Release.Name }}-prometheus-server 9090:80 -n {{ .Release.Namespace }}
+    → http://localhost:9090
+
+  Tempo:
+    kubectl port-forward svc/{{ .Release.Name }}-tempo 3200:3100 -n {{ .Release.Namespace }}
+    → http://localhost:3200
+
+  Demo app:
+    kubectl port-forward svc/{{ include "ai-obs-demo.fullname" . }}-app 8080:8080 -n {{ .Release.Namespace }}
+    → http://localhost:8080
+
+  LiteLLM:
+    kubectl port-forward svc/{{ include "ai-obs-demo.fullname" . }}-litellm 4000:4000 -n {{ .Release.Namespace }}
+    → http://localhost:4000
+
+WAIT FOR VLLM
+─────────────
+vLLM takes 2-5 minutes to load the model. Watch readiness:
+
+  kubectl rollout status deployment/{{ include "ai-obs-demo.fullname" . }}-vllm -n {{ .Release.Namespace }}
+
+RUNNING THE DEMO ORCHESTRATOR
+──────────────────────────────
+  cd demo-script/
+  cp .env.example .env
+  # Fill in your tenant API keys from values.yaml
+  export $(cat .env | xargs)
+
+  python orchestrator.py --dry-run   # validate first
+  python orchestrator.py             # full 15-minute run
+
+After the run:
+  python find_hero_trace.py          # find Tab 3 hero trace
+
+CLEANING UP
+───────────
+  helm uninstall {{ .Release.Name }} -n {{ .Release.Namespace }}
+  kubectl delete namespace {{ .Release.Namespace }}
+
+{{- if not .Values.vllm.hfToken }}
+
+⚠  HF_TOKEN not set — vLLM will fail to pull gated models.
+   Set vllm.hfToken in values.yaml or create a secret and
+   set vllm.hfTokenSecret to its name.
+{{- end }}

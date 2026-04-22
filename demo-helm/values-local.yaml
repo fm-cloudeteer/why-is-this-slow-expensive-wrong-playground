@@ -1,0 +1,127 @@
+# values-local.yaml
+# Overrides for local development / rehearsal without a GPU.
+# Uses a CPU-friendly stub model so the full stack runs on a laptop.
+#
+# Usage:
+#   helm install ai-obs-demo . -f values.yaml -f values-local.yaml \
+#     --namespace ai-obs-demo --create-namespace
+
+vllm:
+  model: "facebook/opt-125m"     # tiny CPU-runnable model for rehearsal
+  gpu:
+    enabled: false
+  extraArgs:
+    - "--device=cpu"
+    - "--max-model-len=512"
+  modelCache:
+    type: emptyDir               # no pre-downloaded model on laptop
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: 2000m
+      memory: 4Gi
+
+dcgmExporter:
+  enabled: false   # no GPU node on local cluster
+
+# Scale down resource requests for laptop
+demoApp:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+litellm:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+prometheus:
+  server:
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+
+loki:
+  singleBinary:
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        cpu: 200m
+        memory: 512Mi
+
+tempo:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 512Mi
+
+# =============================================================================
+# Gravitee + bundled dependencies — scaled down for laptop rehearsal
+# =============================================================================
+gravitee:
+  mongodb:
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        cpu: 200m
+        memory: 256Mi
+  elasticsearch:
+    master:
+      resources:
+        requests:
+          cpu: 100m
+          memory: 512Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+  api:
+    image:
+      pullPolicy: IfNotPresent
+    resources:
+      requests:
+        cpu: 200m
+        memory: 512Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+  gateway:
+    image:
+      pullPolicy: IfNotPresent
+    resources:
+      requests:
+        cpu: 200m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+  ui:
+    image:
+      pullPolicy: IfNotPresent
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 100m
+        memory: 128Mi

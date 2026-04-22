@@ -1,0 +1,14 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+
+RUN pip install --no-cache-dir aiohttp requests
+
+# Copy orchestrator and all supporting modules
+COPY orchestrator.py config.py find_hero_trace.py ./
+COPY phases/ phases/
+COPY prompts/ prompts/
+COPY utils/ utils/
+
+# Default: full run. Override with args via Helm.
+ENTRYPOINT ["python", "orchestrator.py"]

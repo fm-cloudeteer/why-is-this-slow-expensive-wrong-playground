@@ -1,0 +1,67 @@
+apiVersion: v2
+name: ai-obs-demo
+description: >
+  Demo stack for "Why Is This Slow, Expensive, and Wrong?
+  Observability Across the AI Stack"
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+
+keywords:
+  - observability
+  - llm
+  - demo
+  - grafana
+  - langfuse
+  - vllm
+
+dependencies:
+  # Grafana LGTM — Loki, Tempo, Prometheus, Grafana
+  - name: grafana
+    version: "7.3.7"
+    repository: https://grafana.github.io/helm-charts
+    condition: grafana.enabled
+
+  - name: loki
+    version: "6.6.2"
+    repository: https://grafana.github.io/helm-charts
+    condition: loki.enabled
+
+  - name: tempo
+    version: "1.9.0"
+    repository: https://grafana.github.io/helm-charts
+    condition: tempo.enabled
+
+  - name: alloy
+    version: "0.4.0"
+    repository: https://grafana.github.io/helm-charts
+    condition: alloy.enabled
+
+  - name: prometheus
+    version: "25.20.0"
+    repository: https://prometheus-community.github.io/helm-charts
+    condition: prometheus.enabled
+
+  # NATS JetStream
+  - name: nats
+    version: "1.1.5"
+    repository: https://nats-io.github.io/k8s/helm/charts
+    condition: nats.enabled
+
+  # Langfuse (self-hosted)
+  - name: langfuse
+    version: "1.5.27"
+    repository: https://langfuse.github.io/langfuse-k8s
+    condition: langfuse.enabled
+
+  # Gravitee APIM (Layer 1 — API gateway, key enforcement, traceparent injection)
+  # Chart 4.11.3 bundles its own MongoDB and Elasticsearch subcharts.
+  - name: apim
+    alias: gravitee
+    version: "4.11.3"
+    repository: https://helm.gravitee.io
+    condition: gravitee.enabled
+
+maintainers:
+  - name: Felix
+    email: felix@cloudeteer.de
