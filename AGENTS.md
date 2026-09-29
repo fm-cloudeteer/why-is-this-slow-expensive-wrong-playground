@@ -95,8 +95,9 @@ calls LiteLLM, and replies. This creates a visible queue during burst load.
 **Stream config**: `inference` stream, `WorkQueuePolicy` retention, memory storage, 2 min max age.
 
 **Worker concurrency**: Controlled by `natsWorker.concurrency` in `values.yaml` (default 32).
-At baseline 4 RPS, 32 concurrent slots handle the load. During 30 RPS burst, queue backs up
-because only ~8-10 req/s can drain — creating the "slow" demo pattern.
+At baseline 4 RPS, 32 concurrent slots handle the load. During the burst (`orchestrator.burstRps`,
+default 8), the queue backs up because only ~8.6 req/s can drain (32 slots / ~3.7 s per request)
+— creating the "slow" demo pattern.
 
 **NATS worker image**: Separate image (`ai-obs-demo-nats-worker:latest`), built from
 `demo-script/nats_worker/Dockerfile`. Must be built on the cluster (same as demo app):
@@ -307,7 +308,7 @@ helm upgrade ai-obs-demo . -f values.yaml --namespace ai-obs-demo --no-hooks \
 **Values** (`values.yaml`):
 - `orchestrator.enabled`: `false` by default
 - `orchestrator.args`: list of CLI args (e.g. `["--phase", "slow"]`)
-- `orchestrator.burstRps`: `"30"` (passed as `BURST_RPS` env var)
+- `orchestrator.burstRps`: `"8"` (passed as `BURST_RPS` env var)
 - `orchestrator.tenantKeys.{a,b,c,d}`: Gravitee API keys for each tenant
 - `orchestrator.activeDeadlineSeconds`: `1200` (20 min max)
 
@@ -372,7 +373,7 @@ python find_hero_trace.py
 baseline  3 min  clean load, all tenants healthy
 wrong     4 min  prompt_regression_active flag ON → tenant_b quality degrades
 expensive 3 min  tenant_c receives ~1500-token padded prompts
-slow      3 min  30 RPS burst (90s) + drain (90s)
+slow      3 min  BURST_RPS burst (90s) + drain (90s)
 recovery  2 min  return to baseline
 ```
 
@@ -393,7 +394,14 @@ Written to the `demo-script/` working directory at run end (or partial on Ctrl-C
 
 ### Burst tuning
 
-Target `BURST_RPS` = 6–8x sustainable throughput; aim for queue depth 20-40 at peak, p99 5-9 s. If vLLM logs show OOM, reduce `BURST_RPS`.
+Aim for queue depth 20-40 at peak, p99 5-9 s. The backlog grows by (BURST_RPS − throughput) per second
+for the 90 s burst, so `BURST_RPS` must sit only slightly above sustainable throughput
+(≈ `natsWorker.concurrency` / per-request latency; ~8.6 req/s with 32 slots and Qwen thinking disabled).
+At 30 RPS (≈3.5x) p99 reached ~67 s. Gravitee's backend connection cap is raised to 500 in the bootstrap
+Job so the backlog queues in NATS, not invisibly inside the gateway.
+
+The load generator closes its HTTP session at each phase deadline, cancelling in-flight requests.
+These show up as errors (HTTP 499 at the gateway, `Stream reset` in gateway logs) right at the burst end.
 
 ---
 

@@ -901,7 +901,10 @@ orchestrator:
     tag: "latest"
     pullPolicy: Never
   args: []                           # e.g. ["--phase", "slow"] or ["--dry-run"]
-  burstRps: "30"
+  # Sustainable throughput ≈ natsWorker.concurrency / per-request latency
+  # (32 / ~3.7 s ≈ 8.6 req/s). Burst slightly above that so the 90 s burst
+  # builds a NATS queue of ~20-40 and p99 lands around 5-9 s.
+  burstRps: "8"
   activeDeadlineSeconds: 1200        # 20 min max
   tenantKeys:
     a: "449ea01c-7088-4daa-9ea0-1c7088fdaa30"
