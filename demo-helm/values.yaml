@@ -880,6 +880,26 @@ gravitee:
     enabled: false
 
 # =============================================================================
+# NetBird — exposes the UIs to NetBird peers via NetworkResources.
+# Requires the NetBird operator; skipped if its CRDs are not installed.
+# =============================================================================
+netbird:
+  enabled: true
+  networkRouterRef:
+    name: kubernetes
+    namespace: netbird
+  groups:
+    - name: k8s-services
+  # Service name suffixes (prefixed with the release fullname)
+  services:
+    - grafana
+    - langfuse-web
+    - prometheus-server
+    - gravitee-ui
+    - gravitee-api       # Management API — called directly by the Console in the browser
+    - litellm            # admin UI at /ui
+
+# =============================================================================
 # Ingress — optional, exposes Grafana and Langfuse externally
 # =============================================================================
 ingress:

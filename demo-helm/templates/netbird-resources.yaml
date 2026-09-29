@@ -1,0 +1,24 @@
+{{- /*
+  NetBird NetworkResources — exposes the demo UIs to NetBird peers via the
+  in-cluster NetworkRouter. Skipped automatically on clusters without the
+  NetBird operator CRDs.
+*/}}
+{{- if and .Values.netbird.enabled (.Capabilities.APIVersions.Has "netbird.io/v1alpha1/NetworkResource") }}
+{{- range .Values.netbird.services }}
+---
+apiVersion: netbird.io/v1alpha1
+kind: NetworkResource
+metadata:
+  name: {{ include "ai-obs-demo.fullname" $ }}-{{ . }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "ai-obs-demo.labels" $ | nindent 4 }}
+spec:
+  networkRouterRef:
+    {{- toYaml $.Values.netbird.networkRouterRef | nindent 4 }}
+  serviceRef:
+    name: {{ include "ai-obs-demo.fullname" $ }}-{{ . }}
+  groups:
+    {{- toYaml $.Values.netbird.groups | nindent 4 }}
+{{- end }}
+{{- end }}
