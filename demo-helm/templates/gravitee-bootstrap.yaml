@@ -93,13 +93,17 @@ data:
     # CRITICAL: Must set both group-level AND endpoint-level http config.
     # The v4-emulation-engine ignores group-level http settings and uses
     # endpoint-level ones instead, defaulting to 10s if not set.
+    # maxConcurrentConnections defaults to 100 — raise it so burst backlog
+    # queues in NATS (visible on the dashboard) instead of inside the gateway.
     API_DEF=$(echo "$API_DEF" | jq '
       .proxy.groups[0].http.readTimeout = 120000 |
       .proxy.groups[0].http.idleTimeout = 120000 |
+      .proxy.groups[0].http.maxConcurrentConnections = 500 |
       .proxy.groups[0].endpoints[0].http = {
         "connectTimeout": 10000,
         "idleTimeout": 120000,
-        "readTimeout": 120000
+        "readTimeout": 120000,
+        "maxConcurrentConnections": 500
       }
     ')
     curl -sf -u "$MGMT_AUTH" \
