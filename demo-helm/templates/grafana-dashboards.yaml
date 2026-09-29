@@ -27,23 +27,23 @@ data:
           },
           "targets": [
             {
-              "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
-              "expr": "histogram_quantile(0.99, sum(rate(http_request_duration_ms_bucket{job='gravitee',le!=''}[1m])) by (le))",
-              "legendFormat": "Gateway p99"
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "max(max_over_time(http_server_response_time_seconds_max{job='gravitee',local='0.0.0.0:8082'}[1m])) * 1000",
+              "legendFormat": "Gateway max (end-to-end)"
             },
             {
-              "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
               "expr": "histogram_quantile(0.99, sum(rate(nats_queue_wait_ms_bucket{le!=''}[1m])) by (le))",
               "legendFormat": "Queue wait p99"
             },
             {
-              "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
               "expr": "histogram_quantile(0.99, sum(rate(vllm:time_to_first_token_seconds_bucket{le!=''}[1m])) by (le)) * 1000",
               "legendFormat": "Inference TTFT p99"
             },
             {
-              "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
-              "expr": "histogram_quantile(0.99, sum(rate(vllm:time_per_output_token_seconds_bucket{le!=''}[1m])) by (le)) * 1000",
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "histogram_quantile(0.99, sum(rate(vllm:inter_token_latency_seconds_bucket{le!=''}[1m])) by (le)) * 1000",
               "legendFormat": "Inference decode p99"
             }
           ]
@@ -57,13 +57,13 @@ data:
           "fieldConfig": { "defaults": { "unit": "short", "color": { "fixedColor": "orange", "mode": "fixed" } } },
           "targets": [
             {
-              "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
               "expr": "nats_consumer_num_pending{stream_name='inference'}",
               "legendFormat": "NATS queue depth"
             },
             {
-              "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
-              "expr": "vllm:num_requests_waiting",
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "sum(vllm:num_requests_waiting)",
               "legendFormat": "vLLM internal queue"
             }
           ]
@@ -77,18 +77,18 @@ data:
           "fieldConfig": { "defaults": { "unit": "percent" } },
           "targets": [
             {
-              "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
               "expr": "max(DCGM_FI_DEV_GPU_UTIL) by (gpu)",
               "legendFormat": "GPU {{"{{"}} gpu {{"}}"}} util %"
             },
             {
-              "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
               "expr": "max(DCGM_FI_DEV_FB_USED / (DCGM_FI_DEV_FB_USED + DCGM_FI_DEV_FB_FREE) * 100) by (gpu)",
               "legendFormat": "GPU {{"{{"}} gpu {{"}}"}} VRAM %"
             },
             {
-              "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
-              "expr": "vllm:gpu_cache_usage_perc * 100",
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "avg(vllm:kv_cache_usage_perc) * 100",
               "legendFormat": "KV cache %"
             }
           ]
@@ -134,7 +134,7 @@ data:
           ],
           "targets": [
             {
-              "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
               "refId": "A",
               "instant": true,
               "format": "table",
@@ -142,7 +142,7 @@ data:
               "legendFormat": "input tokens"
             },
             {
-              "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
               "refId": "B",
               "instant": true,
               "format": "table",
@@ -160,13 +160,13 @@ data:
           "fieldConfig": { "defaults": { "unit": "reqps" } },
           "targets": [
             {
-              "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
               "refId": "A",
               "expr": "sum(rate(litellm_requests_total[1m])) by (tenant_id)",
               "legendFormat": "{{"{{"}} tenant_id {{"}}"}} req/s"
             },
             {
-              "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
               "refId": "B",
               "expr": "sum(rate(litellm_requests_total{status='error'}[1m])) by (tenant_id)",
               "legendFormat": "{{"{{"}} tenant_id {{"}}"}} errors/s"
@@ -196,7 +196,7 @@ data:
           },
           "targets": [
             {
-              "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
               "refId": "A",
               "expr": "avg(langfuse_score{score_name='quality'}) by (tenant_id)",
               "legendFormat": "{{"{{"}} tenant_id {{"}}"}} quality score"

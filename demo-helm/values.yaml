@@ -250,13 +250,16 @@ grafana:
       apiVersion: 1
       datasources:
         - name: Prometheus
+          uid: prometheus
           type: prometheus
           url: http://ai-obs-demo-prometheus-server:80
           isDefault: true
         - name: Loki
+          uid: loki
           type: loki
           url: http://ai-obs-demo-loki-gateway:80
         - name: Tempo
+          uid: tempo
           type: tempo
           url: http://ai-obs-demo-tempo:3100
           jsonData:
@@ -264,6 +267,8 @@ grafana:
               datasourceUid: loki
               filterByTraceID: true
             tracesToMetrics:
+              datasourceUid: prometheus
+            serviceMap:
               datasourceUid: prometheus
   dashboardProviders:
     dashboardproviders.yaml:
@@ -376,8 +381,78 @@ alloy:
       create: true
       content: |
         // ── Prometheus scrape targets ────────────────────────────────────
+        // vLLM runs multiple replicas — scrape each pod individually. Scraping
+        // the Service would hit a random replica per scrape and mix counters.
+        discovery.kubernetes "vllm_pods" {
+          role = "pod"
+          namespaces {
+            names = ["ai-obs-demo"]
+          }
+          selectors {
+            role  = "pod"
+            label = "app.kubernetes.io/name=vllm"
+          }
+        }
+
+        discovery.relabel "vllm_pods" {
+          targets = discovery.kubernetes.vllm_pods.targets
+          rule {
+            source_labels = ["__meta_kubernetes_pod_container_port_number"]
+            regex         = "8000"
+            action        = "keep"
+          }
+          rule {
+            source_labels = ["__meta_kubernetes_pod_name"]
+            target_label  = "pod"
+          }
+          rule {
+            target_label = "job"
+            replacement  = "vllm"
+          }
+        }
+
         prometheus.scrape "vllm" {
-          targets = [{ "__address__" = "ai-obs-demo-vllm:8000", "job" = "vllm" }]
+          targets = discovery.relabel.vllm_pods.output
+          scrape_interval = "15s"
+          forward_to = [prometheus.remote_write.default.receiver]
+        }
+
+        // Gravitee gateway — Prometheus endpoint on the technical API (18082)
+        discovery.kubernetes "gravitee_gateway" {
+          role = "pod"
+          namespaces {
+            names = ["ai-obs-demo"]
+          }
+          selectors {
+            role  = "pod"
+            label = "app.kubernetes.io/name=gravitee,app.kubernetes.io/component=gateway"
+          }
+        }
+
+        discovery.relabel "gravitee_gateway" {
+          targets = discovery.kubernetes.gravitee_gateway.targets
+          rule {
+            source_labels = ["__meta_kubernetes_pod_container_port_number"]
+            regex         = "18082"
+            action        = "keep"
+          }
+          rule {
+            source_labels = ["__meta_kubernetes_pod_name"]
+            target_label  = "pod"
+          }
+          rule {
+            target_label = "job"
+            replacement  = "gravitee"
+          }
+        }
+
+        prometheus.scrape "gravitee" {
+          targets = discovery.relabel.gravitee_gateway.output
+          metrics_path = "/_node/metrics/prometheus"
+          basic_auth {
+            username = "admin"
+            password = "adminadmin"
+          }
           scrape_interval = "15s"
           forward_to = [prometheus.remote_write.default.receiver]
         }
@@ -756,7 +831,7 @@ gravitee:
           endpoint: http://ai-obs-demo-alloy:4317
           protocol: grpc
       metrics:
-        enabled: false
+        enabled: true
         prometheus:
           enabled: true
     reporters:
