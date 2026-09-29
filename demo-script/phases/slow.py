@@ -1,7 +1,7 @@
 """
 Phase: slow
 Duration: 3 minutes (90s burst + 90s drain)
-Purpose: fire a request burst ~7.5x above sustainable throughput
+Purpose: fire a request burst just above sustainable throughput
          so that NATS queue depth climbs, p99 spikes, and individual
          traces show multi-second queue wait spans.
 
@@ -50,8 +50,8 @@ async def run_slow(
     # ── Burst ──────────────────────────────────────────────────────────────
     logger.info(f"Firing burst: {burst_rps:.0f} RPS for {burst_duration}s")
     logger.info(
-        f"Sustainable throughput: ~{config.baseline_rps_total:.0f} RPS — "
-        f"burst is {burst_rps / config.baseline_rps_total:.0f}x overload"
+        f"Baseline: {config.baseline_rps_total:.0f} RPS — "
+        f"burst is {burst_rps / config.baseline_rps_total:.1f}x baseline"
     )
 
     burst_start = datetime.now(timezone.utc)

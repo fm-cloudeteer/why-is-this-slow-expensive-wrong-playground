@@ -238,7 +238,7 @@ python orchestrator.py --phase wrong
 | baseline | 3 min | Clean load at 4 RPS (1 per tenant), all healthy |
 | wrong | 4 min | Feature flag injects bad system prompt for tenant_b |
 | expensive | 3 min | tenant_c receives ~1500-token padded prompts |
-| slow | 3 min | 30 RPS burst (90s) + drain (90s) |
+| slow | 3 min | 8 RPS burst (90s, `orchestrator.burstRps`) + drain (90s) |
 | recovery | 2 min | Return to baseline |
 
 ### After the run

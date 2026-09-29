@@ -130,17 +130,22 @@ Set all five Grafana/Langfuse tabs to this window before the talk.
 
 ## Tuning BURST_RPS
 
-The burst needs to be dramatic enough to fill the queue but not
-crash vLLM. Find your sustainable throughput first:
+Target: NATS queue depth reaches 20-40 messages at peak, p99 hits 5-9 s.
 
-```bash
-python orchestrator.py --phase slow  # watch the logs
-# Look for: mean latency < 1000ms at baseline, p99 > 5000ms at burst peak
+During the 90 s burst the backlog grows by `BURST_RPS − throughput` per
+second, so `BURST_RPS` must sit only slightly above sustainable throughput:
+
+```
+throughput ≈ natsWorker.concurrency / per-request latency
+           ≈ 32 / ~3.7 s ≈ 8 req/s   (demo GPUs, Qwen thinking disabled)
 ```
 
-If the queue barely moves, increase `BURST_RPS`.
-If vLLM logs show OOM errors, decrease it.
-Target: queue depth reaches 20-40 messages at peak, p99 hits 5-9s.
+The default is `8` (`orchestrator.burstRps` in Helm, `BURST_RPS` locally).
+Measured on the demo cluster: 30 RPS → p99 ~67 s, 9 RPS → queue ~97 / p99 ~18 s,
+8 RPS → queue ~22 / p99 ~8 s.
+
+If the queue barely moves, increase `BURST_RPS` by 1; if it grows far past 40,
+decrease it. Re-tune after changing GPUs, the model, or `natsWorker.concurrency`.
 
 ---
 

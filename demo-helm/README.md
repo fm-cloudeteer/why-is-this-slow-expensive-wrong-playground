@@ -178,7 +178,7 @@ kubectl rollout restart deployment/ai-obs-demo-langfuse-web -n ai-obs-demo
 | `langfuse.langfuse.nextauth.url` | `http://localhost:3001`  | URL you open Langfuse at — set in `values-override.yaml` |
 | `netbird.enabled`                | `false`                  | NetBird NetworkResources — set in `values-override.yaml` |
 | `orchestrator.args`              | `[]`                     | e.g. `["--phase","slow"]`, `["--dry-run"]` |
-| `orchestrator.burstRps`          | `"30"`                   | Burst RPS for slow phase               |
+| `orchestrator.burstRps`          | `"8"`                    | Burst RPS for slow phase — just above sustainable throughput |
 | `natsWorker.concurrency`         | `32`                     | Concurrent LiteLLM requests per worker |
 | `ingress.enabled`                | `false`                  | Enable for conference cluster access   |
 
