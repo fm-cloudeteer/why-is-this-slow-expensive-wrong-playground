@@ -33,11 +33,13 @@ _REFUSAL_MARKERS = [
     "as an ai", "i am not able", "i can't help",
 ]
 
-# Ticket reference pattern: letters+digits with hyphens
-_TICKET_PATTERN = re.compile(r"[A-Z]{2,}-[A-Z0-9-]{4,}", re.IGNORECASE)
+# Ticket reference pattern: letter prefix, hyphen-separated, ending in a
+# 4+ digit number (e.g. BER-MCH-20241203-4421, TKT-20241205-3391, DB-4471923).
+# Requiring digits keeps route names like "Hamburg-Berlin" from matching.
+_TICKET_PATTERN = re.compile(r"\b[A-Z]{2,}(?:-[A-Z0-9]+)*-\d{4,}\b", re.IGNORECASE)
 
 
-def score_response(response: str, tenant_id: str) -> float:
+def score_response(response: str, tenant_id: str, prompt: str = "") -> float:
     """
     Returns a quality score in [0.0, 1.0].
     Only tenant_b gets the full rule-based check — other tenants
@@ -64,8 +66,8 @@ def score_response(response: str, tenant_id: str) -> float:
     if german_ratio < 0.05:  # less than 5% of words are recognisably German
         score -= 0.35
 
-    # Rule 2: Ticket reference present
-    if not _TICKET_PATTERN.search(response):
+    # Rule 2: Ticket reference present — only when the customer gave one
+    if _TICKET_PATTERN.search(prompt) and not _TICKET_PATTERN.search(response):
         score -= 0.30
 
     # Rule 3: Response length

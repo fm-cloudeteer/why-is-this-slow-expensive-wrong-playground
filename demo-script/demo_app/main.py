@@ -256,7 +256,10 @@ async def chat(
             .get("message", {})
             .get("content", "")
         )
-        quality_score = score_response(response_text, x_tenant_id)
+        user_prompt = " ".join(
+            str(m.get("content", "")) for m in body.messages if m.get("role") == "user"
+        )
+        quality_score = score_response(response_text, x_tenant_id, user_prompt)
 
         # Record Prometheus metrics
         TOKENS_IN.labels(tenant_id=x_tenant_id).inc(input_tokens)
