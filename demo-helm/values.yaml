@@ -624,8 +624,9 @@ langfuse:
       value: "demo-salt-change-me"
     nextauth:
       # Must be the URL you open Langfuse at — login redirects go here.
-      # For port-forward access use http://localhost:<local-port>.
-      url: "https://langfuse-demo.aclsw.europroc.ai"
+      # Default matches the README port-forward (3001:3000); override per cluster
+      # in values-override.yaml.
+      url: "http://localhost:3001"
       secret:
         value: "demo-nextauth-secret-change-me"
     encryptionKey:
@@ -896,14 +897,14 @@ gravitee:
 # =============================================================================
 # NetBird — exposes the UIs to NetBird peers via NetworkResources.
 # Requires the NetBird operator; skipped if its CRDs are not installed.
+# Enable and set router/groups per cluster in values-override.yaml.
 # =============================================================================
 netbird:
-  enabled: true
+  enabled: false
   networkRouterRef:
-    name: kubernetes
-    namespace: netbird
-  groups:
-    - name: k8s-services
+    name: ""
+    namespace: ""
+  groups: []
   # Service name suffixes (prefixed with the release fullname)
   services:
     - grafana
@@ -940,8 +941,10 @@ orchestrator:
   # builds a NATS queue of ~20-40 and p99 lands around 5-9 s.
   burstRps: "8"
   activeDeadlineSeconds: 1200        # 20 min max
+  # Generated per install by the Gravitee bootstrap Job — set them in
+  # values-override.yaml (see values-override.example.yaml).
   tenantKeys:
-    a: "449ea01c-7088-4daa-9ea0-1c7088fdaa30"
-    b: "08a78ccc-6365-45eb-a78c-cc6365c5eb80"
-    c: "39bda341-f075-4ca2-bda3-41f0757ca20d"
-    d: "ac99d150-2640-4dc9-99d1-502640adc9d5"
+    a: ""
+    b: ""
+    c: ""
+    d: ""

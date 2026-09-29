@@ -182,3 +182,5 @@ pyrightconfig.json
 # Runtime artifacts
 demo-script/hero_trace.json
 demo-script/run_manifest.json
+# Cluster-specific Helm overrides (see demo-helm/values-override.example.yaml)
+demo-helm/values-override.yaml

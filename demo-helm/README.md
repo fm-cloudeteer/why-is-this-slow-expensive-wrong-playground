@@ -76,19 +76,24 @@ helm repo update
 # 2. Pull dependencies
 helm dependency update
 
-# 3. Install (demo cluster with GPU)
+# 3. Cluster-specific settings (Langfuse URL, NetBird, tenant keys) — git-ignored
+cp values-override.example.yaml values-override.yaml
+
+# 4. Install (demo cluster with GPU)
 helm install ai-obs-demo . \
   -f values.yaml \
+  -f values-override.yaml \
   --namespace ai-obs-demo \
   --create-namespace \
   --set vllm.hfToken=hf_yourtoken \
   --set demoApp.langfuse.publicKey=pk-lf-yourkey \
   --set demoApp.langfuse.secretKey=sk-lf-yourkey
 
-# 4. Local rehearsal without GPU
+# 5. Local rehearsal without GPU
 helm install ai-obs-demo . \
   -f values.yaml \
   -f values-local.yaml \
+  -f values-override.yaml \
   --namespace ai-obs-demo \
   --create-namespace
 ```
@@ -169,6 +174,9 @@ kubectl rollout restart deployment/ai-obs-demo-langfuse-web -n ai-obs-demo
 | `grafana.adminPassword`          | `demo-grafana-admin`     | Change for any non-local deployment    |
 | `gravitee.enabled`               | `true`                   | Disable to skip Layer 1 entirely       |
 | `orchestrator.enabled`           | `false`                  | Run load generator as on-cluster Job   |
+| `orchestrator.tenantKeys.*`      | `""`                     | Gravitee keys from the bootstrap Job — set in `values-override.yaml` |
+| `langfuse.langfuse.nextauth.url` | `http://localhost:3001`  | URL you open Langfuse at — set in `values-override.yaml` |
+| `netbird.enabled`                | `false`                  | NetBird NetworkResources — set in `values-override.yaml` |
 | `orchestrator.args`              | `[]`                     | e.g. `["--phase","slow"]`, `["--dry-run"]` |
 | `orchestrator.burstRps`          | `"30"`                   | Burst RPS for slow phase               |
 | `natsWorker.concurrency`         | `32`                     | Concurrent LiteLLM requests per worker |

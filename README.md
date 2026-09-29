@@ -116,8 +116,11 @@ helm repo update
 # Fetch sub-chart dependencies
 helm dependency update
 
+# Cluster-specific settings (Langfuse URL, NetBird, tenant keys) — git-ignored
+cp values-override.example.yaml values-override.yaml
+
 # Install
-helm install ai-obs-demo . -f values.yaml \
+helm install ai-obs-demo . -f values.yaml -f values-override.yaml \
   --namespace ai-obs-demo --create-namespace
 ```
 
@@ -138,6 +141,9 @@ Watch the Gravitee bootstrap Job (provisions API keys for all tenants):
 ```bash
 kubectl logs -l job-name=ai-obs-demo-gravitee-bootstrap -n ai-obs-demo -f
 ```
+
+Copy the four generated tenant keys into `orchestrator.tenantKeys` in
+`values-override.yaml` — the on-cluster orchestrator needs them.
 
 Check all pods:
 
@@ -167,8 +173,8 @@ kubectl port-forward svc/ai-obs-demo-gravitee-ui       8002:8002 -n ai-obs-demo 
 | [LiteLLM UI](https://docs.litellm.ai/) | http://localhost:4000/ui | admin / `sk-demo-master-key-change-me` (the master key) |
 
 > **Langfuse login redirect:** Langfuse redirects to `langfuse.langfuse.nextauth.url` after sign-in.
-> Set it in `demo-helm/values.yaml` to the exact URL you open Langfuse at — e.g. `http://localhost:3001`
-> for the port-forward above — otherwise login appears to fail.
+> The default `http://localhost:3001` matches the port-forward above. If you open Langfuse at another
+> address, set it in `demo-helm/values-override.yaml` — otherwise login appears to fail.
 
 ---
 
@@ -184,7 +190,7 @@ The orchestrator runs as a Kubernetes Job — no port-forwarding or local Python
 
 # Run all 5 phases (~15 min)
 kubectl delete job ai-obs-demo-orchestrator -n ai-obs-demo 2>/dev/null
-helm upgrade ai-obs-demo . -f values.yaml \
+helm upgrade ai-obs-demo . -f values.yaml -f values-override.yaml \
   --namespace ai-obs-demo --no-hooks \
   --set orchestrator.enabled=true
 
@@ -192,13 +198,13 @@ helm upgrade ai-obs-demo . -f values.yaml \
 kubectl logs -f job/ai-obs-demo-orchestrator -n ai-obs-demo
 
 # Run a single phase
-helm upgrade ai-obs-demo . -f values.yaml \
+helm upgrade ai-obs-demo . -f values.yaml -f values-override.yaml \
   --namespace ai-obs-demo --no-hooks \
   --set orchestrator.enabled=true \
   --set 'orchestrator.args={--phase,slow}'
 
 # Disable after run
-helm upgrade ai-obs-demo . -f values.yaml \
+helm upgrade ai-obs-demo . -f values.yaml -f values-override.yaml \
   --namespace ai-obs-demo --no-hooks \
   --set orchestrator.enabled=false
 ```
@@ -300,6 +306,7 @@ the request spent waiting in the NATS queue before a worker picked it up.
 demo-helm/           Helm 3 chart — deploys the full stack on Kubernetes
   templates/         Custom templates (vLLM, demo app, LiteLLM, NATS worker, etc.)
   values.yaml        All configuration (model, replicas, credentials, tuning)
+  values-override.example.yaml  Template for cluster-specific values-override.yaml (git-ignored)
 
 demo-script/         Python orchestrator + FastAPI demo app
   orchestrator.py    Main entry point — runs all 5 phases
