@@ -164,6 +164,7 @@ kubectl port-forward svc/ai-obs-demo-gravitee-ui       8002:8002 -n ai-obs-demo 
 | [Langfuse](https://langfuse.com/) | http://localhost:3001 | admin@demo.local / `demo-admin-password` |
 | [Prometheus](https://prometheus.io/) | http://localhost:9090 | — |
 | [Gravitee Console](https://www.gravitee.io/) | http://localhost:8002 | admin / admin |
+| [LiteLLM UI](https://docs.litellm.ai/) | http://localhost:4000/ui | admin / `sk-demo-master-key-change-me` (the master key) |
 
 > **Langfuse login redirect:** Langfuse redirects to `langfuse.langfuse.nextauth.url` after sign-in.
 > Set it in `demo-helm/values.yaml` to the exact URL you open Langfuse at — e.g. `http://localhost:3001`

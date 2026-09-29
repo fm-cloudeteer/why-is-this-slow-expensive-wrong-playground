@@ -61,13 +61,25 @@ litellm:
   service:
     type: ClusterIP
     port: 4000
+  # Postgres for LiteLLM's admin UI (login, keys, spend). Reuses the Langfuse
+  # PostgreSQL instance with a separate database, created by an init container.
+  database:
+    enabled: true
+    host: "ai-obs-demo-langfuse-postgresql"
+    port: 5432
+    name: litellm
+    user: postgres
+    passwordSecret:
+      name: "ai-obs-demo-langfuse-postgresql"
+      key: postgres-password
+    initImage: "docker.io/bitnamilegacy/postgresql:17.3.0-debian-12-r1"
   resources:
     requests:
       cpu: 200m
-      memory: 256Mi
+      memory: 512Mi
     limits:
       cpu: 1000m
-      memory: 1Gi
+      memory: 2Gi        # Prisma migrations at startup need headroom with the DB enabled
   # LiteLLM config — mounted as a ConfigMap
   config:
     model_list:

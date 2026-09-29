@@ -31,6 +31,33 @@ spec:
       annotations:
         checksum/config: {{ toYaml .Values.litellm.config | sha256sum }}
     spec:
+      {{- with .Values.litellm.database }}
+      {{- if .enabled }}
+      initContainers:
+        # Wait for Postgres and create the LiteLLM database if it is missing
+        - name: create-db
+          image: {{ .initImage | quote }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              until pg_isready -h "$PGHOST" -p "$PGPORT" -U "$PGUSER"; do sleep 2; done
+              psql -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='{{ .name }}'" | grep -q 1 \
+                || psql -d postgres -c 'CREATE DATABASE "{{ .name }}"'
+          env:
+            - name: PGHOST
+              value: {{ .host | quote }}
+            - name: PGPORT
+              value: {{ .port | quote }}
+            - name: PGUSER
+              value: {{ .user | quote }}
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .passwordSecret.name }}
+                  key: {{ .passwordSecret.key }}
+      {{- end }}
+      {{- end }}
       containers:
         - name: litellm
           image: "{{ .Values.litellm.image.repository }}:{{ .Values.litellm.image.tag }}"
@@ -62,6 +89,17 @@ spec:
               value: "http://{{ include "ai-obs-demo.fullname" . }}-alloy:4317"
             - name: OTEL_SERVICE_NAME
               value: "litellm"
+            {{- with .Values.litellm.database }}
+            {{- if .enabled }}
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .passwordSecret.name }}
+                  key: {{ .passwordSecret.key }}
+            - name: DATABASE_URL
+              value: "postgresql://{{ .user }}:$(DB_PASSWORD)@{{ .host }}:{{ .port }}/{{ .name }}"
+            {{- end }}
+            {{- end }}
           livenessProbe:
             httpGet:
               path: /health/liveliness
