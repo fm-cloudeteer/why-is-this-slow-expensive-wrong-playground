@@ -21,9 +21,13 @@ Deploys the full demo stack for
 | Alloy            | grafana/alloy                 | OTel collector + metric scraper      |
 | Prometheus       | prometheus-community/prometheus | Metrics storage                    |
 | Langfuse         | langfuse/langfuse             | LLM trace + quality score storage    |
+| NetBird resources| (custom template, optional)   | Expose the UIs to NetBird peers      |
 
 Gravitee APIM and its dependencies (MongoDB, Elasticsearch) are bundled as subcharts
 of the apim chart, gated on `gravitee.enabled`. Disable them if you don't need Layer 1.
+
+LiteLLM stores its admin-UI data in a separate `litellm` database on the Langfuse
+PostgreSQL (`litellm.database`), created by an init container.
 
 ---
 
@@ -33,7 +37,10 @@ of the apim chart, gated on `gravitee.enabled`. Disable them if you don't need L
 - Helm 3.12+
 - NVIDIA GPU node with drivers installed (or use `values-local.yaml` for CPU-only rehearsal)
 - **NVIDIA device plugin** — required for Kubernetes to see GPUs (see below)
-- A HuggingFace token if using a gated model
+- **Custom images** built on the node and imported into k3s: `ai-obs-demo-app:latest`,
+  `ai-obs-demo-nats-worker:v2`, `ai-obs-demo-orchestrator:latest` (see "Build the custom images"
+  in the root `README.md`)
+- A HuggingFace token only if you switch to a gated model (the default model is public)
 
 ### GPU setup (k3s)
 
@@ -80,14 +87,12 @@ helm dependency update
 cp values-override.example.yaml values-override.yaml
 
 # 4. Install (demo cluster with GPU)
+#    Add --set vllm.hfToken=hf_yourtoken only for gated models.
 helm install ai-obs-demo . \
   -f values.yaml \
   -f values-override.yaml \
   --namespace ai-obs-demo \
-  --create-namespace \
-  --set vllm.hfToken=hf_yourtoken \
-  --set demoApp.langfuse.publicKey=pk-lf-yourkey \
-  --set demoApp.langfuse.secretKey=sk-lf-yourkey
+  --create-namespace
 
 # 5. Local rehearsal without GPU
 helm install ai-obs-demo . \
@@ -97,6 +102,10 @@ helm install ai-obs-demo . \
   --namespace ai-obs-demo \
   --create-namespace
 ```
+
+Always pass `values-override.yaml` after `values.yaml` — a plain `-f values.yaml` upgrade disables
+NetBird and resets the Langfuse login redirect. If an install/upgrade fails with
+`failed to download openapi` on a slow API-server link, re-run it with `--skip-schema-validation`.
 
 ---
 
@@ -117,6 +126,9 @@ kubectl port-forward svc/ai-obs-demo-gravitee-gateway  8082:8082 -n ai-obs-demo 
 kubectl port-forward svc/ai-obs-demo-gravitee-ui       8002:8002 -n ai-obs-demo &
 ```
 
+Logins: Grafana `admin` / `demo-grafana-admin`, Langfuse `admin@demo.local` / `demo-admin-password`,
+Gravitee Console `admin` / `admin`, LiteLLM UI (`/ui`) `admin` / the LiteLLM master key.
+
 ---
 
 ## Gravitee bootstrap
@@ -125,17 +137,19 @@ A post-install Job (`gravitee-bootstrap.yaml`) runs automatically after `helm in
 or `helm upgrade`. It:
 
 1. Waits for the Gravitee Management API to become available
-2. Creates the demo API with an API Key plan
+2. Creates the demo API with an API Key plan (120 s timeouts, 500 backend connections)
 3. Creates one application per tenant and subscribes each
-4. Logs the auto-generated API keys — copy them into your `.env`
+4. Logs the API keys Gravitee generated (custom key values from `tenants.*.apiKey` are not honoured)
 
 Watch progress:
 ```bash
 kubectl logs -l job-name=ai-obs-demo-gravitee-bootstrap -n ai-obs-demo -f
 ```
 
-If the custom key PUT fails, the Job logs the generated key. Update
-`TENANT_*_API_KEY` in your `.env` to match before running the orchestrator.
+Copy the keys into `orchestrator.tenantKeys` in `values-override.yaml` (and `TENANT_*_API_KEY` in
+`demo-script/.env` for local runs). The Job deletes itself on success, so its logs may already be
+gone — `AGENTS.md` ("Gravitee APIM") has a snippet that reads the keys from the Management API.
+Keys change on every fresh install and whenever the (non-persistent) MongoDB pod restarts.
 
 ---
 
@@ -161,16 +175,20 @@ kubectl rollout restart deployment/ai-obs-demo-langfuse-web -n ai-obs-demo
 
 | Key                              | Default                  | Notes                                  |
 |----------------------------------|--------------------------|----------------------------------------|
-| `vllm.model`                     | `Qwen/Qwen3.5-9B`       | Any vLLM-supported model       |
+| `vllm.model`                     | `cyankiwi/Qwen3.5-9B-AWQ-4bit` | Any vLLM-supported model         |
+| `vllm.replicaCount`              | `4`                      | One replica per GPU                    |
+| `vllm.extraArgs`                 | thinking disabled        | Keep `enable_thinking: false` — thinking breaks quality scoring |
 | `vllm.hfToken`                   | `""`                     | Required for gated HF models           |
 | `vllm.gpu.count`                 | `1`                      | GPUs per pod                           |
-| `vllm.modelCache.type`           | `emptyDir`               | `emptyDir`, `hostPath`, or `pvc`       |
+| `vllm.modelCache.type`           | `hostPath`               | `emptyDir`, `hostPath`, or `pvc`       |
 | `vllm.modelCache.hostPath`       | `/opt/models/huggingface`| Host path when type=hostPath           |
 | `vllm.nodeSelector`              | `{}`                     | Pin vLLM to GPU node                   |
 | `vllm.tolerations`               | `[]`                     | GPU node taints                        |
-| `demoApp.langfuse.publicKey`     | `pk-lf-change-me`        | From Langfuse project settings         |
-| `demoApp.langfuse.secretKey`     | `sk-lf-change-me`        | From Langfuse project settings         |
-| `tenants.*.apiKey`               | `gw-*-change-me`         | Must match Gravitee API keys           |
+| `demoApp.langfuse.publicKey`     | `pk-lf-1980b1a4-…`       | Must match `LANGFUSE_INIT_PROJECT_PUBLIC_KEY` and LiteLLM's `langfuse_public_key` |
+| `demoApp.langfuse.secretKey`     | `sk-lf-fa520024-…`       | Must match `LANGFUSE_INIT_PROJECT_SECRET_KEY` and LiteLLM's `langfuse_secret_key` |
+| `litellm.config.general_settings.master_key` | `sk-demo-master-key-change-me` | Also the LiteLLM UI password |
+| `litellm.database.enabled`       | `true`                   | Postgres for the LiteLLM admin UI      |
+| `tenants.*.apiKey`               | `gw-*-change-me`         | Requested by the bootstrap Job; Gravitee generates its own keys |
 | `grafana.adminPassword`          | `demo-grafana-admin`     | Change for any non-local deployment    |
 | `gravitee.enabled`               | `true`                   | Disable to skip Layer 1 entirely       |
 | `orchestrator.enabled`           | `false`                  | Run load generator as on-cluster Job   |

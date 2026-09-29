@@ -105,11 +105,11 @@ At baseline 4 RPS, 32 concurrent slots handle the load. During the burst (`orche
 default 8), the queue backs up because only ~8.6 req/s can drain (32 slots / ~3.7 s per request)
 — creating the "slow" demo pattern.
 
-**NATS worker image**: Separate image (`ai-obs-demo-nats-worker:latest`), built from
+**NATS worker image**: Separate image (`ai-obs-demo-nats-worker:v2` — the tag `natsWorker.image.tag` uses), built from
 `demo-script/nats_worker/Dockerfile`. Must be built on the cluster (same as demo app):
 ```bash
 scp -r demo-script/nats_worker meyerfel@ai.meyer3d.de:/tmp/nats-worker-build/
-ssh meyerfel@ai.meyer3d.de 'cd /tmp/nats-worker-build && sudo k3s ctr images rm docker.io/library/ai-obs-demo-nats-worker:latest; sudo docker build -t ai-obs-demo-nats-worker:latest -f Dockerfile . && sudo docker save ai-obs-demo-nats-worker:latest | sudo k3s ctr images import -'
+ssh meyerfel@ai.meyer3d.de 'cd /tmp/nats-worker-build && sudo k3s ctr images rm docker.io/library/ai-obs-demo-nats-worker:v2; sudo docker build -t ai-obs-demo-nats-worker:v2 -f Dockerfile . && sudo docker save ai-obs-demo-nats-worker:v2 | sudo k3s ctr images import -'
 kubectl rollout restart deployment/ai-obs-demo-nats-worker -n ai-obs-demo
 ```
 
