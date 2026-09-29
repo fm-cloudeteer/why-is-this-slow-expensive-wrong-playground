@@ -611,7 +611,9 @@ langfuse:
     salt:
       value: "demo-salt-change-me"
     nextauth:
-      url: "http://localhost:3000"
+      # Must be the URL you open Langfuse at — login redirects go here.
+      # For port-forward access use http://localhost:<local-port>.
+      url: "https://langfuse-demo.aclsw.europroc.ai"
       secret:
         value: "demo-nextauth-secret-change-me"
     encryptionKey:
