@@ -98,7 +98,30 @@ kubectl get nodes -o json | \
 > [Node Feature Discovery](https://github.com/kubernetes-sigs/node-feature-discovery)
 > label requirement. If you have NFD installed, you can omit this flag.
 
-### 3. Deploy the stack
+### 3. Build the custom images
+
+The demo app, NATS worker and orchestrator are custom images with `pullPolicy: Never`, so they
+must exist in k3s's containerd before installing. From the repo root, build them **on the k3s node** (or for
+`linux/amd64` — images built on Apple Silicon are `arm64` and won't run):
+
+```bash
+cd demo-script
+sudo docker build -t ai-obs-demo-app:latest .
+sudo docker build -t ai-obs-demo-nats-worker:v2 nats_worker
+sudo docker build -t ai-obs-demo-orchestrator:latest -f Dockerfile.orchestrator .
+
+# k3s does not overwrite existing tags on import — remove first
+for img in ai-obs-demo-app:latest ai-obs-demo-nats-worker:v2 ai-obs-demo-orchestrator:latest; do
+  sudo k3s ctr images rm docker.io/library/$img 2>/dev/null
+  sudo docker save $img | sudo k3s ctr images import -
+done
+cd ..
+```
+
+After rebuilding an image on a running install, restart its deployment
+(e.g. `kubectl rollout restart deployment/ai-obs-demo-app -n ai-obs-demo`).
+
+### 4. Deploy the stack
 
 ```bash
 cd demo-helm
@@ -116,16 +139,23 @@ helm repo update
 # Fetch sub-chart dependencies
 helm dependency update
 
+# Cluster-specific settings (Langfuse URL, NetBird, tenant keys) — git-ignored
+cp values-override.example.yaml values-override.yaml
+
 # Install
-helm install ai-obs-demo . -f values.yaml \
+helm install ai-obs-demo . -f values.yaml -f values-override.yaml \
   --namespace ai-obs-demo --create-namespace
 ```
+
+> **Overrides:** `values-override.yaml` holds everything specific to your cluster — the Langfuse
+> login URL, optional NetBird exposure and the orchestrator's tenant keys. Always pass it after
+> `values.yaml` on every `helm install` / `helm upgrade`.
 
 > **Model:** The default model is `cyankiwi/Qwen3.5-9B-AWQ-4bit` (4-bit quantized,
 > fits on a single RTX 3090/4090 with 24 GB VRAM). It's a public model — no
 > HuggingFace token needed. Change `vllm.model` in `values.yaml` for a different model.
 
-### 4. Wait for readiness
+### 5. Wait for readiness
 
 vLLM model loading takes 2-5 minutes:
 
@@ -139,13 +169,19 @@ Watch the Gravitee bootstrap Job (provisions API keys for all tenants):
 kubectl logs -l job-name=ai-obs-demo-gravitee-bootstrap -n ai-obs-demo -f
 ```
 
+Copy the four generated tenant keys into `orchestrator.tenantKeys` in
+`values-override.yaml` (and `TENANT_*_API_KEY` in `demo-script/.env` for local runs), then run
+`helm upgrade` with the override so the orchestrator picks them up. The Job deletes itself once it
+succeeds — if its logs are gone, read the keys from the Gravitee Management API
+(see "Gravitee APIM" in `AGENTS.md`). Keys are regenerated on every fresh install.
+
 Check all pods:
 
 ```bash
 kubectl get pods -n ai-obs-demo
 ```
 
-### 5. Access the services
+### 6. Access the services
 
 ```bash
 kubectl port-forward svc/ai-obs-demo-grafana           3000:80   -n ai-obs-demo &
@@ -161,9 +197,19 @@ kubectl port-forward svc/ai-obs-demo-gravitee-ui       8002:8002 -n ai-obs-demo 
 | Service | URL | Credentials |
 |---------|-----|-------------|
 | [Grafana](https://grafana.com/grafana/) | http://localhost:3000 | admin / `demo-grafana-admin` |
-| [Langfuse](https://langfuse.com/) | http://localhost:3001 | demo@demo.com / `demo-admin-password` |
+| [Langfuse](https://langfuse.com/) | http://localhost:3001 | admin@demo.local / `demo-admin-password` |
 | [Prometheus](https://prometheus.io/) | http://localhost:9090 | — |
 | [Gravitee Console](https://www.gravitee.io/) | http://localhost:8002 | admin / admin |
+| [LiteLLM UI](https://docs.litellm.ai/) | http://localhost:4000/ui | admin / `sk-demo-master-key-change-me` (the master key) |
+
+> **Langfuse login redirect:** Langfuse redirects to `langfuse.langfuse.nextauth.url` after sign-in.
+> The default `http://localhost:3001` matches the port-forward above. If you open Langfuse at another
+> address, set it in `demo-helm/values-override.yaml` — otherwise login appears to fail.
+
+> **NetBird (optional):** with the [NetBird Kubernetes operator](https://docs.netbird.io/) installed,
+> set `netbird.enabled`, `netbird.networkRouterRef` and `netbird.groups` in `values-override.yaml` to
+> expose Grafana, Langfuse, Prometheus, the Gravitee Console/API and LiteLLM to NetBird peers. Point
+> NetBird proxies at the **Service** port (e.g. Grafana and Prometheus listen on `80`).
 
 ---
 
@@ -179,7 +225,7 @@ The orchestrator runs as a Kubernetes Job — no port-forwarding or local Python
 
 # Run all 5 phases (~15 min)
 kubectl delete job ai-obs-demo-orchestrator -n ai-obs-demo 2>/dev/null
-helm upgrade ai-obs-demo . -f values.yaml \
+helm upgrade ai-obs-demo . -f values.yaml -f values-override.yaml \
   --namespace ai-obs-demo --no-hooks \
   --set orchestrator.enabled=true
 
@@ -187,13 +233,13 @@ helm upgrade ai-obs-demo . -f values.yaml \
 kubectl logs -f job/ai-obs-demo-orchestrator -n ai-obs-demo
 
 # Run a single phase
-helm upgrade ai-obs-demo . -f values.yaml \
+helm upgrade ai-obs-demo . -f values.yaml -f values-override.yaml \
   --namespace ai-obs-demo --no-hooks \
   --set orchestrator.enabled=true \
   --set 'orchestrator.args={--phase,slow}'
 
 # Disable after run
-helm upgrade ai-obs-demo . -f values.yaml \
+helm upgrade ai-obs-demo . -f values.yaml -f values-override.yaml \
   --namespace ai-obs-demo --no-hooks \
   --set orchestrator.enabled=false
 ```
@@ -204,8 +250,12 @@ helm upgrade ai-obs-demo . -f values.yaml \
 cd demo-script
 pip install -r requirements.txt
 cp .env.example .env
-# Edit .env — set tenant API keys and Langfuse credentials
+# Edit .env — set the tenant API keys from the Gravitee bootstrap Job
+export $(cat .env | xargs)
 ```
+
+Keep the port-forwards from step 6 running — the local orchestrator reaches the gateway, Langfuse,
+Prometheus, Tempo and the demo app through them.
 
 ```bash
 # Validate config
@@ -227,18 +277,31 @@ python orchestrator.py --phase wrong
 | baseline | 3 min | Clean load at 4 RPS (1 per tenant), all healthy |
 | wrong | 4 min | Feature flag injects bad system prompt for tenant_b |
 | expensive | 3 min | tenant_c receives ~1500-token padded prompts |
-| slow | 3 min | 30 RPS burst (90s) + drain (90s) |
+| slow | 3 min | 8 RPS burst (90s, `orchestrator.burstRps`) + drain (90s) |
 | recovery | 2 min | Return to baseline |
 
 ### After the run
 
+The orchestrator prints the run's time range and the burst window ("Hero trace window") at the end.
+Open the pre-provisioned dashboard and set the time range to match.
+
+Find the hero trace — the request that waited longest in the NATS queue during the burst:
+
 ```bash
-# Find the hero trace (longest queue wait during burst)
+# Local run (reads run_manifest.json; needs the Tempo port-forward)
 python find_hero_trace.py
+
+# On-cluster run — pass the burst window from the orchestrator logs (UTC)
+kubectl run hero-trace -n ai-obs-demo --image=ai-obs-demo-orchestrator:latest \
+  --image-pull-policy=Never --restart=Never --command -- \
+  python find_hero_trace.py --tempo-url http://ai-obs-demo-tempo:3100 \
+  --window-start HH:MM:SS --window-end HH:MM:SS
+kubectl wait --for=jsonpath='{.status.phase}'=Succeeded pod/hero-trace -n ai-obs-demo --timeout=180s
+kubectl logs hero-trace -n ai-obs-demo && kubectl delete pod hero-trace -n ai-obs-demo
 ```
 
-The orchestrator prints Grafana time range timestamps at the end of every run.
-Open the pre-provisioned dashboard and set the time range to match.
+Check the picked trace in Grafana: it should start inside the burst window and return HTTP 200
+(a trace aborted at a phase boundary shows HTTP 499 on the gateway span).
 
 ---
 
@@ -246,20 +309,23 @@ Open the pre-provisioned dashboard and set the time range to match.
 
 ### Grafana dashboard
 
-The pre-provisioned dashboard ("AI Obs Demo") shows:
+The pre-provisioned dashboard ("AI Obs Demo — Slow / Expensive / Wrong") shows:
 
-- **Latency panels** — p99/p50 request latency, vLLM time-to-first-token
-- **Queue depth** — NATS JetStream pending messages (spikes during burst)
-- **Token spend** — stacked bar chart of input/output tokens per tenant
-- **Request rate** — per-tenant req/s and error rate
-- **GPU utilization** — DCGM metrics (util %, VRAM %)
-- **Quality scores** — Langfuse quality scores per tenant
+- **Latency by layer** — gateway max latency, NATS queue-wait p99, vLLM time-to-first-token and
+  decode (inter-token) p99
+- **Queue depth** — NATS JetStream pending messages (spikes during burst) and vLLM's internal queue
+- **GPU utilization & VRAM** — DCGM metrics per GPU plus vLLM KV-cache usage
+- **Token spend** — input/output tokens per tenant
+- **Request & error rate** — per-tenant req/s and errors/s
+- **Output quality** — quality score per tenant (tenant_b drops when the bad prompt is active)
 
 ### Tempo (distributed tracing)
 
-Each request produces a trace spanning: Gravitee → Demo App → NATS → Worker → LiteLLM → vLLM.
-During the burst phase, the `nats-worker-process` span shows `queue_wait_ms` — the time
-the request spent waiting in the NATS queue before a worker picked it up.
+Each request produces a trace spanning: Gravitee → Demo App → NATS Worker → LiteLLM (the call to
+vLLM appears as LiteLLM's `raw_gen_ai_request` span; vLLM itself emits no spans).
+During the burst phase, the `nats-worker-process` span carries `queue_wait_ms` — the time
+the request spent waiting in the NATS queue before a worker picked it up. Search for it in
+Grafana Explore → Tempo with TraceQL: `{ span.queue_wait_ms > 5000.0 }` (float literal required).
 
 ### Langfuse
 
@@ -295,6 +361,7 @@ the request spent waiting in the NATS queue before a worker picked it up.
 demo-helm/           Helm 3 chart — deploys the full stack on Kubernetes
   templates/         Custom templates (vLLM, demo app, LiteLLM, NATS worker, etc.)
   values.yaml        All configuration (model, replicas, credentials, tuning)
+  values-override.example.yaml  Template for cluster-specific values-override.yaml (git-ignored)
 
 demo-script/         Python orchestrator + FastAPI demo app
   orchestrator.py    Main entry point — runs all 5 phases

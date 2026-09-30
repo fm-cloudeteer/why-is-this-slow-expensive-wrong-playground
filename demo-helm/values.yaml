@@ -61,13 +61,25 @@ litellm:
   service:
     type: ClusterIP
     port: 4000
+  # Postgres for LiteLLM's admin UI (login, keys, spend). Reuses the Langfuse
+  # PostgreSQL instance with a separate database, created by an init container.
+  database:
+    enabled: true
+    host: "ai-obs-demo-langfuse-postgresql"
+    port: 5432
+    name: litellm
+    user: postgres
+    passwordSecret:
+      name: "ai-obs-demo-langfuse-postgresql"
+      key: postgres-password
+    initImage: "docker.io/bitnamilegacy/postgresql:17.3.0-debian-12-r1"
   resources:
     requests:
       cpu: 200m
-      memory: 256Mi
+      memory: 512Mi
     limits:
       cpu: 1000m
-      memory: 1Gi
+      memory: 2Gi        # Prisma migrations at startup need headroom with the DB enabled
   # LiteLLM config — mounted as a ConfigMap
   config:
     model_list:
@@ -125,6 +137,9 @@ vllm:
   extraArgs:
     - "--max-model-len=4096"
     - "--gpu-memory-utilization=0.90"
+    # Qwen3.5 thinks by default — its English reasoning eats max_tokens before
+    # the answer, which breaks tenant_b's quality scoring. Disable it.
+    - '--default-chat-template-kwargs={"enable_thinking": false}'
   # Model cache volume — controls how the HuggingFace cache is stored
   # type: emptyDir (default, re-downloads every restart)
   #        hostPath (pre-downloaded model on node, survives restarts)
@@ -250,13 +265,16 @@ grafana:
       apiVersion: 1
       datasources:
         - name: Prometheus
+          uid: prometheus
           type: prometheus
           url: http://ai-obs-demo-prometheus-server:80
           isDefault: true
         - name: Loki
+          uid: loki
           type: loki
           url: http://ai-obs-demo-loki-gateway:80
         - name: Tempo
+          uid: tempo
           type: tempo
           url: http://ai-obs-demo-tempo:3100
           jsonData:
@@ -264,6 +282,8 @@ grafana:
               datasourceUid: loki
               filterByTraceID: true
             tracesToMetrics:
+              datasourceUid: prometheus
+            serviceMap:
               datasourceUid: prometheus
   dashboardProviders:
     dashboardproviders.yaml:
@@ -376,8 +396,78 @@ alloy:
       create: true
       content: |
         // ── Prometheus scrape targets ────────────────────────────────────
+        // vLLM runs multiple replicas — scrape each pod individually. Scraping
+        // the Service would hit a random replica per scrape and mix counters.
+        discovery.kubernetes "vllm_pods" {
+          role = "pod"
+          namespaces {
+            names = ["ai-obs-demo"]
+          }
+          selectors {
+            role  = "pod"
+            label = "app.kubernetes.io/name=vllm"
+          }
+        }
+
+        discovery.relabel "vllm_pods" {
+          targets = discovery.kubernetes.vllm_pods.targets
+          rule {
+            source_labels = ["__meta_kubernetes_pod_container_port_number"]
+            regex         = "8000"
+            action        = "keep"
+          }
+          rule {
+            source_labels = ["__meta_kubernetes_pod_name"]
+            target_label  = "pod"
+          }
+          rule {
+            target_label = "job"
+            replacement  = "vllm"
+          }
+        }
+
         prometheus.scrape "vllm" {
-          targets = [{ "__address__" = "ai-obs-demo-vllm:8000", "job" = "vllm" }]
+          targets = discovery.relabel.vllm_pods.output
+          scrape_interval = "15s"
+          forward_to = [prometheus.remote_write.default.receiver]
+        }
+
+        // Gravitee gateway — Prometheus endpoint on the technical API (18082)
+        discovery.kubernetes "gravitee_gateway" {
+          role = "pod"
+          namespaces {
+            names = ["ai-obs-demo"]
+          }
+          selectors {
+            role  = "pod"
+            label = "app.kubernetes.io/name=gravitee,app.kubernetes.io/component=gateway"
+          }
+        }
+
+        discovery.relabel "gravitee_gateway" {
+          targets = discovery.kubernetes.gravitee_gateway.targets
+          rule {
+            source_labels = ["__meta_kubernetes_pod_container_port_number"]
+            regex         = "18082"
+            action        = "keep"
+          }
+          rule {
+            source_labels = ["__meta_kubernetes_pod_name"]
+            target_label  = "pod"
+          }
+          rule {
+            target_label = "job"
+            replacement  = "gravitee"
+          }
+        }
+
+        prometheus.scrape "gravitee" {
+          targets = discovery.relabel.gravitee_gateway.output
+          metrics_path = "/_node/metrics/prometheus"
+          basic_auth {
+            username = "admin"
+            password = "adminadmin"
+          }
           scrape_interval = "15s"
           forward_to = [prometheus.remote_write.default.receiver]
         }
@@ -533,7 +623,10 @@ langfuse:
     salt:
       value: "demo-salt-change-me"
     nextauth:
-      url: "http://localhost:3000"
+      # Must be the URL you open Langfuse at — login redirects go here.
+      # Default matches the README port-forward (3001:3000); override per cluster
+      # in values-override.yaml.
+      url: "http://localhost:3001"
       secret:
         value: "demo-nextauth-secret-change-me"
     encryptionKey:
@@ -756,7 +849,7 @@ gravitee:
           endpoint: http://ai-obs-demo-alloy:4317
           protocol: grpc
       metrics:
-        enabled: false
+        enabled: true
         prometheus:
           enabled: true
     reporters:
@@ -802,6 +895,26 @@ gravitee:
     enabled: false
 
 # =============================================================================
+# NetBird — exposes the UIs to NetBird peers via NetworkResources.
+# Requires the NetBird operator; skipped if its CRDs are not installed.
+# Enable and set router/groups per cluster in values-override.yaml.
+# =============================================================================
+netbird:
+  enabled: false
+  networkRouterRef:
+    name: ""
+    namespace: ""
+  groups: []
+  # Service name suffixes (prefixed with the release fullname)
+  services:
+    - grafana
+    - langfuse-web
+    - prometheus-server
+    - gravitee-ui
+    - gravitee-api       # Management API — called directly by the Console in the browser
+    - litellm            # admin UI at /ui
+
+# =============================================================================
 # Ingress — optional, exposes Grafana and Langfuse externally
 # =============================================================================
 ingress:
@@ -823,10 +936,15 @@ orchestrator:
     tag: "latest"
     pullPolicy: Never
   args: []                           # e.g. ["--phase", "slow"] or ["--dry-run"]
-  burstRps: "30"
+  # Sustainable throughput ≈ natsWorker.concurrency / per-request latency
+  # (32 / ~3.7 s ≈ 8.6 req/s). Burst slightly above that so the 90 s burst
+  # builds a NATS queue of ~20-40 and p99 lands around 5-9 s.
+  burstRps: "8"
   activeDeadlineSeconds: 1200        # 20 min max
+  # Generated per install by the Gravitee bootstrap Job — set them in
+  # values-override.yaml (see values-override.example.yaml).
   tenantKeys:
-    a: "449ea01c-7088-4daa-9ea0-1c7088fdaa30"
-    b: "08a78ccc-6365-45eb-a78c-cc6365c5eb80"
-    c: "39bda341-f075-4ca2-bda3-41f0757ca20d"
-    d: "ac99d150-2640-4dc9-99d1-502640adc9d5"
+    a: ""
+    b: ""
+    c: ""
+    d: ""

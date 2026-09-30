@@ -32,7 +32,7 @@ class DemoConfig:
 
     # Load parameters
     baseline_rps_total: float = 4.0  # across all tenants (1 per tenant)
-    burst_rps_total: float = 30.0    # burst multiplier target (~7.5x overload)
+    burst_rps_total: float = 8.0     # just above sustainable throughput (~8 req/s)
     burst_duration_seconds: int = 90
 
     # Timing
@@ -78,5 +78,5 @@ class DemoConfig:
             tempo_url=os.environ.get("TEMPO_URL", "http://localhost:3200"),
             feature_flag_url=os.environ.get("FEATURE_FLAG_URL", "http://localhost:8080"),
             tenants=tenants,
-            burst_rps_total=float(os.environ.get("BURST_RPS", "30")),
+            burst_rps_total=float(os.environ.get("BURST_RPS", "8")),
         )

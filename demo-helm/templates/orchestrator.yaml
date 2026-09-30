@@ -48,7 +48,7 @@ spec:
             - name: TENANT_D_API_KEY
               value: {{ .Values.orchestrator.tenantKeys.d | quote }}
             - name: BURST_RPS
-              value: {{ .Values.orchestrator.burstRps | default "30" | quote }}
+              value: {{ .Values.orchestrator.burstRps | default "8" | quote }}
           resources:
             requests:
               cpu: 100m

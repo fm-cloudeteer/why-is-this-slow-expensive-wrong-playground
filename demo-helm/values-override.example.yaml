@@ -1,0 +1,36 @@
+# =============================================================================
+# values-override.example.yaml — cluster-specific overrides
+# =============================================================================
+# Copy to values-override.yaml (git-ignored) and fill in values for your cluster:
+#
+#   cp values-override.example.yaml values-override.yaml
+#
+# Then pass it after values.yaml on every install / upgrade:
+#
+#   helm upgrade --install ai-obs-demo . -f values.yaml -f values-override.yaml ...
+# =============================================================================
+
+# Langfuse redirects here after login — must be the exact URL you open it at.
+langfuse:
+  langfuse:
+    nextauth:
+      url: "https://langfuse.example.com"
+
+# NetBird NetworkResources for the demo UIs (requires the NetBird operator).
+netbird:
+  enabled: true
+  networkRouterRef:
+    name: kubernetes        # NetworkRouter name
+    namespace: netbird      # NetworkRouter namespace
+  groups:
+    - name: my-netbird-group
+
+# Gravitee API keys for the on-cluster orchestrator. The bootstrap Job generates
+# them on each fresh install — copy them from its logs:
+#   kubectl logs -l job-name=ai-obs-demo-gravitee-bootstrap -n ai-obs-demo
+orchestrator:
+  tenantKeys:
+    a: "<tenant_a key>"
+    b: "<tenant_b key>"
+    c: "<tenant_c key>"
+    d: "<tenant_d key>"
