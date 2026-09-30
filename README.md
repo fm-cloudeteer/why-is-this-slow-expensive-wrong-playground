@@ -2,7 +2,7 @@
 
 ## Observability Across the AI Stack
 
-This repo contains the full playground from the [Leaseweb Tech Meetup](https://luma.com/klg1zbe2) talk with the same name. It deploys a
+This repo contains the full playground from the [Leaseweb Tech Summit](https://techsummit.io/) talk with the same name. It deploys a
 multi-tenant LLM inference stack with end-to-end observability on Kubernetes,
 then runs scripted failure scenarios so you can explore how each layer of
 observability catches different problems.
